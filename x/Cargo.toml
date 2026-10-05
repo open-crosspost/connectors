@@ -1,0 +1,21 @@
+[package]
+name = "x-connector"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "OutLayer connector for X (Twitter): an agent posts as the owner's connected account, under the owner's policy"
+
+[[bin]]
+name = "x-connector"
+path = "src/main.rs"
+
+[dependencies]
+connector-core = { path = "../connector-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+outlayer = { workspace = true }
+wasi-http-client = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+
+[dev-dependencies]

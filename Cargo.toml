@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["connector-core", "x"]
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+outlayer = { version = "0.2", features = ["encryption-keys"] }
+wasi-http-client = "0.2"
+sha2 = "0.10"
+base64 = "0.21"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1

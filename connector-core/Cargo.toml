@@ -1,0 +1,14 @@
+[package]
+name = "connector-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Shared boilerplate for the open-crosspost connector family: the answer shape, the owner-policy model, per-wallet budget counters, the dual OAuth credential, refusal helpers and the manifest embedding"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+outlayer = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
