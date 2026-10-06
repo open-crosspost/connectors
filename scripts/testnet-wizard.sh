@@ -174,6 +174,15 @@ finish() {
 
 TOTAL_STAGES=12
 
+# The wasm a workspace member builds lands in the REPO ROOT's target/, no
+# matter where the wizard is run from — so everything below uses an absolute
+# path rooted at this script's location.
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+WASM="$ROOT/target/wasm32-wasip2/release/x-connector.wasm"
+# Every later command (build, outlayer, scripts/, scripts/.env) is
+# repo-root-relative; run from anywhere.
+cd "$ROOT"
+
 banner "x connector — testnet publish + smoke test"
 
 # ── 1. prerequisites ──────────────────────────────────────────────────────
@@ -200,12 +209,12 @@ stage "Build (fail-closed checks inside)"
 say "Running x/build.sh — the wasm, the manifest section, the task import,"
 say "the manifest/code/README agreement, the 2MB limit, the SHA256."
 if confirm "Build now?"; then
-  (cd x && ./build.sh) || { warn "build failed — fix it before publishing"; exit 1; }
+  (cd "$ROOT/x" && ./build.sh) || { warn "build failed — fix it before publishing"; exit 1; }
 else
   say "Keeping the existing artefact."
 fi
-[ -f ../target/wasm32-wasip2/release/x-connector.wasm ] || { warn "no wasm at ../target — build first"; exit 1; }
-HASH=$(shasum -a 256 ../target/wasm32-wasip2/release/x-connector.wasm | cut -d' ' -f1)
+[ -f "$WASM" ] || { warn "no wasm at $WASM — build first"; exit 1; }
+HASH=$(shasum -a 256 "$WASM" | cut -d' ' -f1)
 write_env WASM_SHA256 "$HASH"
 say "SHA256 (= the version_key everywhere below): $HASH"
 
@@ -225,7 +234,7 @@ outlayer whoami testnet 2>/dev/null || warn "outlayer whoami testnet did not ans
 stage "Upload the wasm to FastFS"
 say "Anyone may upload: the uploader shows in the URL only, the contract"
 say "records url + hash, the worker verifies the hash before executing."
-outlayer upload "$( [ -f x/target/wasm32-wasip2/release/x-connector.wasm ] && echo x/target/wasm32-wasip2/release/x-connector.wasm || echo target/wasm32-wasip2/release/x-connector.wasm )" || { warn "upload failed"; exit 1; }
+outlayer upload "$WASM" || { warn "upload failed"; exit 1; }
 ask FASTFS_URL "Paste the FastFS URL that upload printed:"
 write_env FASTFS_URL "$FASTFS_URL"
 step "Verify the URL serves exactly those bytes (indexing takes 1–2 minutes):"
