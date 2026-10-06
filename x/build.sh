@@ -17,7 +17,8 @@ set -e
 
 cd "$(dirname "$0")"
 
-WASM_FILE="target/wasm32-wasip2/release/x-connector.wasm"
+# A workspace member builds into the workspace root's target/.
+WASM_FILE="../target/wasm32-wasip2/release/x-connector.wasm"
 MAX_SIZE=$((2 * 1024 * 1024))  # 2MB in bytes
 
 echo "Building WASI module (wasm32-wasip2)..."

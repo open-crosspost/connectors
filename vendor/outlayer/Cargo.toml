@@ -1,0 +1,26 @@
+[package]
+name = "outlayer"
+version = "0.2.0"
+edition = "2021"
+description = "SDK for OutLayer off-chain WASM execution on NEAR"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/out-layer/outlayer"
+keywords = ["near", "wasm", "wasi", "storage", "blockchain"]
+categories = ["wasm", "api-bindings"]
+
+[dependencies]
+wit-bindgen = "0.36"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[features]
+default = []
+# `outlayer:signing-keys`: the `signing_keys` module.
+signing-keys = []
+# `outlayer:encryption-keys`: the `encryption_keys` module and `storage::sealed`.
+encryption-keys = []
+# `outlayer:tasks`: the `tasks` module.
+tasks = []
+
+[package.metadata.docs.rs]
+all-features = true

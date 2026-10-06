@@ -27,6 +27,31 @@ pub fn set(path: &str, name: &str, value: &[u8]) -> Result<()> {
     sealed::set(path, None, name, value)
 }
 
+/// Set only when the record is absent; answers whether it was set.
+pub fn set_if_absent(path: &str, name: &str, value: &[u8]) -> Result<bool> {
+    sealed::set_if_absent(path, None, name, value)
+}
+
+/// Set `name` to `next` only when it currently holds `current` (compared as
+/// plaintext, CAS'd on the sealed record). Answers whether it was written:
+/// the caller treats a `false` the same as a storage failure — the counter
+/// moved under it, and the retry loop starts over.
+pub fn set_if_equals_plaintext(path: &str, name: &str, current: &[u8], next: &[u8]) -> Result<bool> {
+    match sealed::get(path, None, name)? {
+        None => {
+            if current.is_empty() {
+                Ok(sealed::set_if_absent(path, None, name, next)?)
+            } else {
+                Ok(false)
+            }
+        }
+        Some(record) if record.plaintext() == current => {
+            Ok(sealed::set_if_equals(path, None, name, &record, next).map(|(written, _)| written)?)
+        }
+        Some(_) => Ok(false),
+    }
+}
+
 /// Add `delta` to counter `name` and answer the new value, atomically: a
 /// compare-and-set on the sealed record, retried while another call changed
 /// it first. A missing counter starts at zero; `delta` 0 reads it.

@@ -123,16 +123,16 @@ pub fn count_key(prefix: &str, day: &str, counted: Counted) -> String {
 }
 
 /// How a day's count is changed: the storage primitive in a run, a stand-in
-/// in the tests. A plain function pointer, so a reservation can carry it
-/// into `Drop`. The real one is [`crate::store::increment`] — atomic
-/// (compare-and-set, retried), never read-then-written: two calls of one
-/// agent can run at once, and a read-then-write lets both see room for one
-/// more.
-pub type Bump = fn(&str, i64) -> Result<i64, String>;
+/// in the tests. A closure, so a reservation can carry it into `Drop` (and
+/// a run can count through its own store — [`crate::store`] for the real
+/// one, which is a sealed compare-and-swap; never read a counter and then
+/// write it back: two calls of one agent can run at once, and a
+/// read-then-write lets both see room for one more).
+pub type Bump<'a> = Box<dyn Fn(&str, i64) -> Result<i64, String> + 'a>;
 
 /// The caller's own things counted today, including any a call in flight has
 /// reserved.
-pub fn sent_today(bump: Bump, key: &str) -> Result<u32, String> {
+pub fn sent_today(bump: impl Fn(&str, i64) -> Result<i64, String>, key: &str) -> Result<u32, String> {
     let count = bump(key, 0).map_err(|e| format!("the day's count could not be read: {e}"))?;
     Ok(count.max(0) as u32)
 }
@@ -143,20 +143,20 @@ pub fn sent_today(bump: Bump, key: &str) -> Result<u32, String> {
 /// every early return between here and the done thing gives the place back,
 /// and the owner's budget is spent only by things that happened. An outcome
 /// that is unknown is KEPT: see the module comment.
-pub struct Reservation {
+pub struct Reservation<'a> {
     key: String,
     kept: bool,
-    bump: Bump,
+    bump: Bump<'a>,
 }
 
-impl Reservation {
+impl Reservation<'_> {
     /// The thing happened: the place stays taken.
     pub fn keep(mut self) {
         self.kept = true;
     }
 }
 
-impl Drop for Reservation {
+impl Drop for Reservation<'_> {
     fn drop(&mut self) {
         if !self.kept {
             // A release that fails leaves the count one too high, which
@@ -168,13 +168,13 @@ impl Drop for Reservation {
 
 /// Take a place in today's budget of `counted`, or refuse with the owner's
 /// word if the cap is full. Returns the count including this one.
-pub fn reserve(
-    bump: Bump,
+pub fn reserve<'a>(
+    bump: impl Fn(&str, i64) -> Result<i64, String> + 'a,
     key: String,
     cap: u32,
-) -> Result<(Reservation, u32), String> {
+) -> Result<(Reservation<'a>, u32), String> {
     let after = bump(&key, 1).map_err(|e| format!("the day's count could not be updated: {e}"))?;
-    let reservation = Reservation { key, kept: false, bump };
+    let reservation = Reservation { key, kept: false, bump: Box::new(bump) };
     if after > cap as i64 {
         // Dropping it gives the place back.
         drop(reservation);

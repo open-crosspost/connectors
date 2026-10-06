@@ -310,8 +310,6 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 [[package]]
 name = "outlayer"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "355f4dc8c0b503cddf1e0010377a598cb9f8122de8dd5404c89ae04c43c46872"
 dependencies = [
  "serde",
  "serde_json",

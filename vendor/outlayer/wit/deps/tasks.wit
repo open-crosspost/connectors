@@ -1,0 +1,430 @@
+package outlayer:tasks@0.1.0;
+
+/// Tasks between an agent and its owner.
+///
+/// A run of a project, admitted to an owner's secret row, leaves a task for
+/// that owner: "confirm this email", "give me your photo". The owner reads it
+/// in their inbox, with no run, and approves it with one signature of their
+/// wallet; the platform then starts a run of the AGENT that prepared the
+/// task, on the agent's own payment key and wallet, in the operation the
+/// task names, and that run carries the task out. Nothing waits inside a
+/// run: a task is a record.
+///
+/// A project that uses tasks says so in its `outlayer.manifest`:
+///
+///     "tasks": true
+///
+/// **Whose task.** The owner of a task is the owner of the secret row the run
+/// named and the keystore opened — never an account the component names. The
+/// preparer is the account that made the run. A task opened by a run that
+/// answered one continues that task's conversation (`thread`); its preparer
+/// is the run's caller, which for the run that carries a task out is the
+/// preparer again. The host decides both from the job; no function here
+/// takes an account.
+///
+/// **The consent.** A task is carried out by a run of its preparer that the
+/// platform starts on the owner's approval, paid by the payment key that
+/// made the preparing run, with its wallet, its identity and within its
+/// compute limit. Those facts are sealed with the task in `open` as the
+/// preparer's consent to that run, so `open` is refused `no-payment-key` in
+/// a run that has none: a task is opened over HTTPS with a payment key.
+///
+/// **A notice** (`kind: notice`) tells the owner something and asks nothing:
+/// it names no operation to answer by, nothing is written back to it, and no
+/// run follows it — so it carries no consent, and a run with no payment key,
+/// one made on chain included, may open one. The owner closes it with Got
+/// it, and its preparer reads it `done`; `answered` refuses it
+/// `answer-invalid`. Everything else is a task's: who may open one, the
+/// limits, the life, what it shows, the files, the proof.
+///
+/// **Who may do what.**
+///
+/// - `open`: a run admitted to the owner's row BY NAME — the row's condition
+///   lists the caller — or the owner's own run. A row open to everyone, to a
+///   pattern or to holders of a token admits the run and refuses the task.
+/// - `mine`, `status`, `cancel`, `delete`: the tasks whose preparer is this
+///   caller in this project for this owner, and no others.
+/// - `answered`, `report`: the run of the preparer the platform started on
+///   the owner's approval — the same account, payment key, wallet and
+///   identity as the preparing run, within its compute limit — and no other
+///   run, the owner's own included.
+/// - `unlock`: the owner's own run.
+///
+/// A run of another project reaches nothing of this project's tasks: they are
+/// sealed under a key bound to the project and the owner, which the host
+/// holds and the component never sees.
+///
+/// **What a task shows** is a structure the owner's page draws as plain text:
+/// a title and fields, each a label, a kind from a fixed list and its values.
+/// No markup is interpreted, no link can be pressed, nothing is loaded. The
+/// host checks the structure in `open`; one outside the bounds refuses the
+/// task.
+///
+/// **What follows an approval is code.** A task names the operation that
+/// carries it out (`answer-by`) and carries no arguments for it. The
+/// platform starts the preparer's run in that operation with an input of
+/// `task_id`, `task_hash`, `approval`, and `supplied` and `note` when the
+/// owner wrote them; the operation calls `answered` with them, takes back
+/// the `state` it sealed when it made the task, acts, and calls `report`.
+///
+/// **States.** `open` → `approved` (the owner signed; the platform started
+/// the preparer's run) → `answering` (that run took the task) → `done` (it
+/// ended well and reported) or `failed` (it ended any other way, or was
+/// refused the task before it took it, or could not be started). Or `open`
+/// → `rejected`, `cancelled`, `expired`, `void`. A notice is `open` →
+/// `done` (the owner saw it), `cancelled` or `expired`. Each move is made
+/// once. A task never returns to `open`.
+///
+/// **Absence is a value, failure an error.** `mine` with nothing answers
+/// `ok([])`. A store or a chain that did not answer is `err` with
+/// `unavailable` — never an empty list. Every error carries a `reason` the
+/// component branches on and a `message` for a person; no function traps.
+interface api {
+    /// What a task asks of the owner.
+    enum task-kind {
+        /// Yes or no.
+        confirm,
+        /// The owner supplies something.
+        input,
+        /// Tells the owner something; asks nothing.
+        notice,
+    }
+
+    /// How the owner's page draws a field's values.
+    enum field-kind {
+        money,
+        account,
+        address,
+        text,
+        long-text,
+        %list,
+    }
+
+    /// Whose words a field's values are.
+    enum written-by {
+        /// Computed or fetched by the project's code: an amount, a payee's
+        /// name as the bank gives it.
+        project,
+        /// Written by the agent that asked: an email body, a memo.
+        agent,
+    }
+
+    /// One field of what a task shows. `values` holds exactly one value,
+    /// except for `list`, which holds 1 to 20.
+    record field {
+        label: string,
+        kind: field-kind,
+        values: list<string>,
+        written-by: written-by,
+    }
+
+    /// What the owner is shown: a title of at most 80 characters and at most
+    /// 12 fields. A label is at most 40 characters; a value at most 50000 in
+    /// a `long-text`, 500 in a `text`, 200 anywhere else. Refused: control
+    /// characters, characters that are not drawn or that reorder or hide
+    /// text, more than four combining marks in a row, and a text made only
+    /// of spaces. A `long-text` may hold line breaks and tabs. An emoji is
+    /// written with its selector and its joiner, and is drawn.
+    record display {
+        title: string,
+        fields: list<field>,
+    }
+
+    /// A file that is part of what the owner is asked about: an attachment
+    /// of a message, a document to sign off. The owner's page lists it by
+    /// name, type and size and gives it to the owner to open, as a download;
+    /// `answered` hands it back. At most 10 files a task, 6291456 bytes
+    /// together; a name of at most 200 characters, a type of at most 100.
+    /// A name is no path, neither begins nor ends with a space or a dot, and
+    /// is of one file of the task, whatever its case; a type is a type and a
+    /// subtype about one `/`.
+    record file {
+        name: string,
+        content-type: string,
+        data: list<u8>,
+    }
+
+    /// What the owner supplies with their answer.
+    enum supplies {
+        nothing,
+        text,
+        /// A reference to a file and its hash; the file itself is elsewhere.
+        file,
+    }
+
+    /// How the owner answers: the operation of this project they call
+    /// (`[a-z0-9_]`, at most 64), and what they supply with it.
+    record answer-by {
+        operation: string,
+        supplies: supplies,
+    }
+
+    /// A task to open.
+    record request {
+        kind: task-kind,
+        display: display,
+        /// The operation that carries the owner's answer out: present for a
+        /// `confirm` and an `input`, absent for a `notice`. Either way round
+        /// is refused `display-invalid`.
+        answer-by: option<answer-by>,
+        /// The files the owner is shown beside the fields.
+        files: list<file>,
+        /// Bytes of the component's own, at most 262144, sealed beside the
+        /// task and handed back by `answered`. The owner is never shown them.
+        state: list<u8>,
+        /// The policy the task is made under, as the component reads it; at
+        /// most 65536 bytes. `answered` is given the policy of that moment,
+        /// and a task made under another is `void`.
+        policy: list<u8>,
+        /// How long the task waits, in seconds. 0 is the longest a task may
+        /// wait; more than that is refused `life-too-long`. A task that takes
+        /// an answer waits 900 at least; less is refused `display-invalid`.
+        life-seconds: u32,
+    }
+
+    /// A task that was opened.
+    record opened {
+        id: string,
+        /// SHA-256 of the task's envelope, hex: what the owner's answer names.
+        hash: string,
+        /// The id of the first task of the conversation: this task's own, or
+        /// that of the task this run answered, whose preparer it keeps.
+        thread: string,
+        /// Unix seconds.
+        expires-at: u64,
+        /// How many of the owner's devices read it at once. 0: the owner
+        /// reads it after signing in and one run of `unlock`.
+        devices: u32,
+    }
+
+    enum task-state {
+        open,
+        /// The owner approved; the preparer's run is started and has not yet
+        /// taken the task.
+        approved,
+        answering,
+        done,
+        failed,
+        rejected,
+        cancelled,
+        expired,
+        void,
+    }
+
+    /// A task as its preparer reads it.
+    record outcome {
+        id: string,
+        kind: task-kind,
+        state: task-state,
+        /// Unix seconds.
+        created-at: u64,
+        expires-at: u64,
+        /// The run that acts, or acted, on the owner's approval: present on
+        /// `approved`, `answering`, `done` and `failed`. Its status is the
+        /// platform's ordinary status of a call.
+        run: option<string>,
+        /// What the project reported: on `done`, the result; on `failed` as
+        /// `run_trapped`, the result it reported before the run failed; as
+        /// `run_failed`, why it was not carried out.
+        %result: option<list<u8>>,
+        /// The owner's reason, as they wrote it: on `rejected`, when they
+        /// gave one.
+        rejection: option<string>,
+        /// Why a task is `failed`. Before its run acted: `preparer_key_unavailable`
+        /// (the payment key that prepared could not pay for the run),
+        /// `operation_priced`, `operation_unknown`, `operation_limit_reached`,
+        /// `wallet_unresolved`, `queue_unavailable`, `run_not_started`, or
+        /// `run_refused:<reason>` with the reason the host refused the run
+        /// `answered` with — `run_refused:unreported` when the run ended
+        /// without ever asking for the task. After its run took the answer:
+        /// `run_failed` (the project said, with `report-failure`, that it did
+        /// not carry the task out; why is in `result`), `run_trapped` (it
+        /// reported the task carried out, and then the run failed; what it
+        /// reported is in `result`), `run_unreported` (the run ended without a
+        /// word on the task — it may have acted),
+        /// `run_unfinished` (no word of the run's end in time — it may have
+        /// acted). Absent in every other state.
+        failure-reason: option<string>,
+    }
+
+    /// The owner's approval of a task: one NEP-413 signature their wallet
+    /// made over a sentence naming the task's id, the hash of what they were
+    /// shown and the digest of what they supplied and wrote, at a minute.
+    /// Handed to the run in its input by the platform and passed to
+    /// `answered` as it is; the host rebuilds the sentence from what is
+    /// sealed and verifies the signature under a full-access key of the
+    /// owner's account on chain.
+    record approval {
+        /// Unix seconds: the minute the sentence names.
+        at: u64,
+        /// The key that signed, `ed25519:<base58>`.
+        public-key: string,
+        /// Base64, 64 bytes.
+        signature: string,
+        /// Base64, 32 bytes.
+        nonce: string,
+    }
+
+    /// What `answered` hands the operation that acts.
+    record answer {
+        id: string,
+        thread: string,
+        /// The account whose run made the task.
+        preparer: string,
+        kind: task-kind,
+        /// The operation the task named: the one running.
+        operation: string,
+        /// What the component sealed in `open`.
+        state: list<u8>,
+        /// The files the task was opened with, as the owner was given them.
+        files: list<file>,
+        /// What the owner supplied, opened: text, or a file's reference.
+        /// Absent for a task that asked for nothing.
+        supplied: option<list<u8>>,
+        /// What the owner wrote beside their approval, opened: text of at
+        /// most 50000 characters. Absent when they wrote nothing.
+        note: option<list<u8>>,
+    }
+
+    enum reason {
+        /// The manifest does not say `"tasks": true`.
+        not-declared,
+        /// The run names no secret row, the row was not opened, or the run
+        /// does not go through a project.
+        no-owner,
+        /// The run was relayed: the account that called OutLayer is not the
+        /// account that signed. A contract the signer called made this run,
+        /// so nothing here is the signer's own act.
+        relayed,
+        /// The row admitted the run by a rule that does not list the caller.
+        not-granted-by-name,
+        /// The owner muted this agent or this project.
+        muted,
+        /// The owner's limit of open tasks, this preparer's share of it, or
+        /// the owner's limit of what waiting tasks may hold together.
+        inbox-full,
+        /// This run opened as many tasks, or made as many calls of this
+        /// interface, as one run may. Another run starts from nothing.
+        run-limit,
+        /// A kind outside the list, too many fields, a value too long, or a
+        /// life too short for a task that takes an answer: the message names
+        /// which.
+        display-invalid,
+        /// `state`, `policy`, the files, the envelope or a result over its
+        /// bound.
+        too-large,
+        /// A life asked beyond the maximum.
+        life-too-long,
+        /// No such task of this project for this owner, or for this preparer.
+        not-found,
+        /// `unlock` in a run that is not the owner's.
+        not-the-owner,
+        /// `answered` in a run that is not the preparer's run the consent
+        /// names: another account, another payment key, another wallet,
+        /// another identity, or more compute than the preparing run allowed.
+        /// The message names which.
+        not-the-preparer,
+        /// The approval does not hold: its time is outside ten minutes of
+        /// now or past the task's life, its sentence is not this task's, its
+        /// signature does not verify, or the key that signed is not a
+        /// full-access key of the owner's account. The message names which.
+        approval-invalid,
+        /// `open` of a task that takes an answer in a run that has no payment
+        /// key: the consent to carry out the owner's answer is a payment key
+        /// — the run that carries it out is paid by that key — so such a
+        /// task is opened over HTTPS with one. A notice needs none.
+        no-payment-key,
+        /// The hash named is not the task's.
+        hash-mismatch,
+        /// What the owner supplied is not what the task asked for, or does
+        /// not open; or the task is a notice, which takes no answer.
+        answer-invalid,
+        /// The task was answered, rejected or cancelled already.
+        closed,
+        /// Past its life.
+        expired,
+        /// The policy changed since the task was made, or the run that
+        /// answers is of another build of the project than the one that
+        /// made it: what the owner was shown and proved is what acts.
+        void,
+        /// A sealed copy that does not open. The message is `decryption
+        /// failed` and nothing more.
+        unreadable,
+        /// The store or the chain did not answer. The same call may succeed
+        /// later.
+        unavailable,
+        /// A fault of the platform's own: the host or the store could not do
+        /// what was asked, and the same call will not do better. The task's
+        /// id, where one is named, was taken by an earlier run of this call.
+        /// Also `open` in a run that answered tasks of more than one
+        /// conversation: a task it opens belongs to none.
+        internal,
+    }
+
+    record task-error {
+        reason: reason,
+        message: string,
+    }
+
+    /// Open a task for the owner of the secret row this run was admitted to,
+    /// with this run's consent to the run that will carry it out.
+    open: func(request: request) -> result<opened, task-error>;
+
+    /// The tasks whose preparer is this caller in this project for this
+    /// owner: the open ones, and the outcomes kept.
+    mine: func() -> result<list<outcome>, task-error>;
+
+    /// One of them.
+    status: func(id: string) -> result<outcome, task-error>;
+
+    /// Take the task `id`, approved by its owner, whose envelope hashes to
+    /// `hash`, in the operation `operation` — the one now running; a task
+    /// that names another to answer by is refused `answer-invalid` and stays
+    /// as it is. `policy` is the policy as the component reads it now;
+    /// `approval` the owner's approval as the run's input carries it;
+    /// `supplied` and `note` what the owner's page sent, each sealed to the
+    /// task's reply key, as the input carries them. The run must be the one
+    /// the task's consent names (`not-the-preparer`), the approval must hold
+    /// (`approval-invalid`), and the task must be `approved`. On `ok` the
+    /// task is `answering` under this run, and what it showed is deleted from
+    /// the store. A refusal of a task that is `approved` is recorded and,
+    /// when the run ends, fails the task with `run_refused:<reason>`.
+    answered: func(id: string, hash: string, operation: string, policy: list<u8>, approval: approval, supplied: option<list<u8>>, note: option<list<u8>>) -> result<answer, task-error>;
+
+    /// Leave `result` (at most 16384 bytes) for the preparer of a task this
+    /// run answered, and with it the word that the task was carried out: it
+    /// is `done` when the run ends as a success, and `failed` as
+    /// `run_trapped`, `result` kept, when the run fails after. A task this run
+    /// answered and reported nothing of is `failed` as `run_unreported`.
+    report: func(id: string, %result: list<u8>) -> result<_, task-error>;
+
+    /// Leave `result` (at most 16384 bytes) for the preparer of a task this
+    /// run answered, with the word that it was NOT carried out: the task is
+    /// `failed` as `run_failed` when the run ends, and `result` — the
+    /// project's refusal — is what the preparer reads. A later `report` or
+    /// `report-failure` of the same task replaces it.
+    report-failure: func(id: string, %result: list<u8>) -> result<_, task-error>;
+
+    /// Withdraw an open task whose preparer is this caller.
+    cancel: func(id: string) -> result<_, task-error>;
+
+    /// Delete a task whose preparer is this caller and that nothing was
+    /// carried out on: open (withdrawn with it), cancelled, rejected,
+    /// expired, void, or failed with a reason that says nothing was done —
+    /// `run_failed`, `run_not_started`, `run_refused:*`, or a run that was
+    /// never started. One the owner's yes acted on, or may have — approved,
+    /// answering, done, failed for any other reason — is the owner's record
+    /// too, and is refused `closed`.
+    delete: func(id: string) -> result<_, task-error>;
+
+    /// Write the copies of this project's open tasks for every device the
+    /// owner has in force — for a device that was not signed in when the
+    /// tasks were made. Answers how many tasks were opened for a device,
+    /// whatever the number of devices; the owner's page reads them from the
+    /// inbox, and nothing of them passes through the component.
+    unlock: func() -> result<u32, task-error>;
+}
+
+world tasks-host {
+    import api;
+}

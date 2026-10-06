@@ -5,7 +5,14 @@ members = ["connector-core", "x"]
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-outlayer = { version = "0.2", features = ["encryption-keys"] }
+# The platform's SDK, as a checked copy (the platform's own convention:
+# connectors keep copies of what they are generated against, and a copy
+# drifts loudly instead of silently). The published crate (0.2.0 on
+# crates.io) predates the `tasks` interface, which the confirm flow and the
+# task operations need. Vendored at rev
+# 31d534b7e5de92276830970c4971bb76dffb90fc of out-layer/outlayer; bump
+# deliberately, with the runbook, and re-read its README when you do.
+outlayer = { path = "vendor/outlayer", features = ["encryption-keys", "tasks"] }
 wasi-http-client = "0.2"
 sha2 = "0.10"
 base64 = "0.21"
