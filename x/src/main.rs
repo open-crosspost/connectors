@@ -59,6 +59,11 @@ const OPERATIONS: &[&str] = &[
     "tasks_unlock",
 ];
 
+/// The sentence a run answers when the operation is not one of ours.
+fn sells() -> String {
+    format!("This connector sells: {}", OPERATIONS.join(", "))
+}
+
 fn main() {
     let raw = outlayer::env::input();
     let transport = WasiTransport;
@@ -131,14 +136,8 @@ fn run(
         "task_delete" => confirm::task(op, input),
         "tasks" => confirm::task(op, input),
         "tasks_unlock" => confirm::task(op, input),
-        "" => Err(format!(
-            "no `operation` in the input. This connector sells: {}",
-            OPERATIONS.join(", ")
-        )),
-        other => Err(format!(
-            "unknown operation `{other}`. This connector sells: {}",
-            OPERATIONS.join(", ")
-        )),
+        "" => Err(format!("no `operation` in the input. {}", sells())),
+        other => Err(format!("unknown operation `{other}`. {}", sells())),
     }
 }
 

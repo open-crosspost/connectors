@@ -202,16 +202,16 @@ fn refresh(transport: &dyn Transport, credential: &Credential, current: String) 
             .and_then(Value::as_str)
             .unwrap_or_else(|| if response.body.is_empty() { "no detail" } else { "" });
         if code == "invalid_grant" {
-            return Err(connector_core::refusal::credential_expired("X", &smart(detail(code, described)), CONNECT_PAGE));
+            return Err(connector_core::refusal::credential_expired("X", &trimmed(detail(code, described)), CONNECT_PAGE));
         }
         if code == "invalid_client" {
             return Err(connector_core::refusal::credential_rejected(
                 "X",
-                &format!("the OAuth client was refused (invalid_client: {}); the client id or secret this run holds is not a live X app", smart(detail(code, described))),
+                &format!("the OAuth client was refused (invalid_client: {}); the client id or secret this run holds is not a live X app", trimmed(detail(code, described))),
                 CONNECT_PAGE,
             ));
         }
-        return Err(format!("X refused the token request: HTTP {} {code} {}", response.status, smart(detail(code, described))));
+        return Err(format!("X refused the token request: HTTP {} {code} {}", response.status, trimmed(detail(code, described))));
     }
 
     let access_token = value
@@ -240,7 +240,9 @@ fn detail(code: &str, described: &str) -> String {
     }
 }
 
-fn smart(detail: String) -> String {
+/// A detail with its edges taken off: a service's own words, repeated
+/// verbatim, never padded with whitespace.
+fn trimmed(detail: String) -> String {
     detail.trim().to_string()
 }
 

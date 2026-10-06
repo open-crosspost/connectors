@@ -119,36 +119,18 @@ impl RecordStore for WasiStore {
     }
 }
 
-/// The day's budget, counted through the store. A `Bump` over a
-/// [`RecordStore`], standing in for the sealed compare-and-swap in tests.
+/// The day's budget, counted through the store: the core's one
+/// compare-and-set loop, over this run's [`RecordStore`] — the real one in
+/// a run (whose failures surface as a counter that "kept changing", the
+/// safe direction for a budget), the [`testing::MemStore`] in tests.
 pub fn store_bump(store: &dyn RecordStore, key: &str, delta: i64) -> Result<i64, String> {
-    match store.get(key) {
-        None => {
-            if delta == 0 {
-                return Ok(0);
-            }
-            if store.set_if_absent(key, delta.to_string().as_bytes()) {
-                Ok(delta)
-            } else {
-                Err("the counter kept changing under concurrent calls".into())
-            }
-        }
-        Some(current) => {
-            let now: i64 = std::str::from_utf8(&current)
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .ok_or_else(|| format!("counter {key} does not hold a number"))?;
-            if delta == 0 {
-                return Ok(now);
-            }
-            let next = now + delta;
-            if store.set_if_equals(key, &current, next.to_string().as_bytes()) {
-                Ok(next)
-            } else {
-                Err("the counter kept changing under concurrent calls".into())
-            }
-        }
-    }
+    connector_core::store::cas_increment(
+        |name| Ok(store.get(name)),
+        |name, value| Ok(store.set_if_absent(name, value)),
+        |name, current, next| Ok(store.set_if_equals(name, current, next)),
+        key,
+        delta,
+    )
 }
 
 /// Every secret value this run has seen, to sweep the answer with before it

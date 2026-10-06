@@ -23,7 +23,6 @@
 //! and stays in the connector. What it carries is the credential resolution,
 //! the cache, and the form-encoding a credential needs before it can travel.
 
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// The names the credential's values arrive under. `client_*` are an OWNER's
@@ -97,33 +96,9 @@ pub fn cache_key(credential: &Credential, prefix: &str) -> String {
     format!("{prefix}:token:{short}")
 }
 
-/// The cached token as it is stored.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Cached {
-    pub access_token: String,
-    /// Unix seconds at which this token stops being used here.
-    pub good_until: u64,
-}
-
 /// Refreshed this long before the service's own expiry, so a token cannot
 /// die between the check and the call that uses it.
 pub const SAFETY_MARGIN_SECS: u64 = 120;
-
-/// The cached token, if it is still good at `now_secs`.
-pub fn cached(bytes: Option<Vec<u8>>, now_secs: u64) -> Option<String> {
-    let record: Cached = serde_json::from_slice(&bytes?).ok()?;
-    (record.good_until > now_secs).then_some(record.access_token)
-}
-
-/// The record to store for a freshly minted token, `expires_in` seconds
-/// long by the service's word. A life shorter than the margin would mean
-/// never caching anything, so it is floored.
-pub fn fresh(access_token: String, expires_in: u64, now_secs: u64) -> Cached {
-    Cached {
-        access_token,
-        good_until: now_secs + expires_in.max(SAFETY_MARGIN_SECS + 60).saturating_sub(SAFETY_MARGIN_SECS),
-    }
-}
 
 /// Percent-encode a form value. The credential is not ours to assume
 /// anything about, and an unescaped `&` in a secret would silently send a
@@ -219,27 +194,6 @@ mod tests {
         assert!(!cache_key(&a, "x").contains("one"), "the key carries a digest, never the token");
         // Two connectors' caches never meet.
         assert_ne!(cache_key(&a, "x"), cache_key(&a, "gm"));
-    }
-
-    #[test]
-    fn a_cached_token_is_used_only_while_it_is_good() {
-        let record = fresh("tok".into(), 3600, 1_000_000);
-        let bytes = serde_json::to_vec(&record).unwrap();
-        assert_eq!(cached(Some(bytes.clone()), 1_000_000).as_deref(), Some("tok"));
-        assert!(cached(Some(bytes), 1_000_000 + 3600).is_none(), "an expired cache is not a token");
-        assert!(cached(None, 0).is_none(), "no record, no token");
-        assert!(cached(Some(b"not json".to_vec()), 0).is_none(), "a record this build cannot read is no token");
-    }
-
-    /// The stored life is floored: a service saying "0 seconds" must never
-    /// store a token that is dead on arrival, and the safety margin is
-    /// already taken out of a real answer.
-    #[test]
-    fn a_fresh_token_never_outlives_its_service_answer_by_the_margin() {
-        let at = 1_000_000u64;
-        assert_eq!(fresh("t".into(), 3600, at).good_until, at + 3600 - 120);
-        assert_eq!(fresh("t".into(), 120, at).good_until, at + 60, "floored to the margin plus a minute");
-        assert_eq!(fresh("t".into(), 0, at).good_until, at + 60);
     }
 
     #[test]
