@@ -33,7 +33,34 @@ flow, pointed at the mainnet host).
    "X_OAUTH_CLIENT_SECRET":…}' --project connectors.outlayer.near/x --profile
    author` — a MAINNET row; the testnet author row does not follow.
 5. **Curation.** the review gates 1–4; the wasm published here is the exact
-   bytes the testnet runbook validated (same SHA256 discipline).
+   bytes the tests validated (same SHA256 discipline).
+
+**Status (2026-10-06):** the wasm is published at a fetchable URL and the
+handoff package is ready — `docs/MAINNET_HANDOFF.md` holds the exact calls
+(add_version `set_active: false`, the price rows, the activation, the author
+row) for the OutLayer team, who sign everything under the curated namespace.
+The wallet's trial payment key is claimed (50 calls, expires 2026-10-13).
+
+## The credential route (no OutLayer UI, no whitelist)
+
+The crosspost UI's own flow — the row is stored **under the user's own
+custody wallet**, so the caller and the row's owner are the same account and
+no access rule exists to maintain:
+
+1. the user links X in the crosspost UI (our OAuth PKCE page — today,
+   `scripts/x-connect.sh` does the same flow by hand: consent click → token
+   exchange → row store, and the refresh token is never printed);
+2. the row is stored with `POST /wallet/v1/agent-secret` (the user's wallet
+   signs with its `wk_`; `…/prepare` lets the author pay the storage when the
+   wallet has no NEAR): project `connectors.outlayer.near/x`, values
+   `X_REFRESH_TOKEN`, `X_POLICY` (the caps the user chose in OUR UI), and —
+   when they bring their own X app — `X_CLIENT_ID`/`X_CLIENT_SECRET` (the
+   dual model: theirs wins over the author's);
+3. every connector call carries `X-Use-Owner-Secret: 1` and **no
+   `secrets_ref`**.
+
+The owner-row + whitelist route remains for a user granting a THIRD-PARTY
+agent access to their X — not for this product's own path.
 
 ## Mainnet-only work
 
@@ -78,9 +105,13 @@ connector.
 
 | check | date | result |
 |---|---|---|
+| wasm published at a fetchable URL (release v0.1.0, hash verified) | 2026-10-06 | ✓ |
+| trial payment key claimed (50 calls) | 2026-10-06 | ✓ |
+| handoff package ready (docs/MAINNET_HANDOFF.md) | 2026-10-06 | ✓ |
 | curation review passed | — | ☐ |
 | publish (version → prices → activate) | — | ☐ |
 | author row on mainnet | — | ☐ |
+| X account linked (agent-secret route) | — | ☐ |
 | real mainnet post from a real user wallet | — | ☐ |
 | sponsor path live (new signups never pay) | — | ☐ |
 | monitoring/telemetry live | — | ☐ |
