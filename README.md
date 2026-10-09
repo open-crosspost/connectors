@@ -62,6 +62,15 @@ know, or when the manifest, the code and the README disagree about the
 operations. It prints the wasm's SHA256 — the value `add_version` records and
 the worker verifies.
 
+## Preview (no signature needed)
+
+The same wasm runs end to end **before** the namespace signs anything:
+[docs/PREVIEW.md](docs/PREVIEW.md) — `scripts/preview-deploy.sh` publishes it
+as an ordinary project under your own account (`<you>/x`), and
+`scripts/x-run.sh` calls either shape (the curated namespace's
+`X-Use-Owner-Secret: 1`, or `secrets_ref` for the preview). A redeploy is one
+run of the script — this is also the update loop while curation pends.
+
 ## Publishing (OutLayer signs)
 
 The namespace account (`connectors.outlayer.testnet`) signs `add_version`
