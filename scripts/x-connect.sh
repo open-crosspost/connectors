@@ -95,37 +95,53 @@ case "$GRANTED_SCOPE" in
   *) echo "WARN: the granted scope does not name offline.access/tweet.write — the row will store, but posting may be refused scope_missing." ;;
 esac
 
-# ── store the row under the wallet's own account (the agent-secret route) ────
-BODY=$(python3 - "$PROJECT" "$REFRESH" "$X_CLIENT_ID" "$X_CLIENT_SECRET" "$POLICY" <<'PY'
-import sys, json
-project, refresh, client_id, client_secret, policy = sys.argv[1:6]
-print(json.dumps({
-    "project": project,
-    "secrets": {
-        "X_REFRESH_TOKEN": refresh,
-        "X_CLIENT_ID": client_id,
-        "X_CLIENT_SECRET": client_secret,
-        "X_POLICY": json.dumps(json.loads(policy), separators=(",", ":")),
-    },
-}))
-PY
-)
-ANSWER=$(curl -s -w '\n%{http_code}' -X POST "$OUTLAYER_API/wallet/v1/agent-secret" \
-  -H "Authorization: Bearer ${OUTLAYER_WALLET_API_KEY:?set OUTLAYER_WALLET_API_KEY in scripts/.env}" \
-  -H "Content-Type: application/json" \
-  -d "$BODY")
-STATUS=$(printf '%s' "$ANSWER" | tail -n1)
-REPLY=$(printf '%s' "$ANSWER" | sed '$d')
-if [ "$STATUS" = "200" ] || [ "$STATUS" = "201" ]; then
-  echo "✓ stored: the row now sits under the wallet's own account for $PROJECT."
-  echo "  Call the connector with X-Use-Owner-Secret: 1 and no secrets_ref."
-else
-  echo "The store did not land (HTTP $STATUS). The endpoint's answer names what it wants:"
-  printf '%s\n' "$REPLY" | head -5
-  echo "The refresh token is NOT lost — it is held in scripts/.env as X_REFRESH_TOKEN"
-  echo "(chmod 600, gitignored) so you can store the row by hand or re-run once the"
-  echo "body shape is right. Delete the line when the row is stored."
+# ── store the rows — `outlayer secrets set` (client-side TEE encryption) ──────
+# Two rows, accessor Project(PROJECT), and they must be DISJOINT:
+#   * profile author            — the OAuth client pair (the connect handoff
+#                                 completes refreshes inside the enclave);
+#   * profile <wallet account>  — the credential: refresh token + policy.
+# Storing the same variable in both rows is refused ("rename one side").
+need_cli() { command -v outlayer >/dev/null 2>&1 || { echo "ERROR: outlayer CLI required"; exit 1; }; }
+STORE_ERR() {
+  echo "The store did not land. The refresh token is NOT lost — it is held in"
+  echo "scripts/.env as X_REFRESH_TOKEN so you can store the rows by hand:"
+  echo "  outlayer secrets set '{...X_CLIENT_ID, X_CLIENT_SECRET...}' \\"
+  echo "    --project '$PROJECT' --profile author"
+  echo "  outlayer secrets set '{...X_REFRESH_TOKEN, X_POLICY...}' \\"
+  echo "    --project '$PROJECT' --profile <your wallet's account>"
   umask 077
   printf '%s\n' "$TOKEN_ANSWER" | python3 -c 'import sys,json; print("X_REFRESH_TOKEN=" + json.load(sys.stdin)["refresh_token"])' >> scripts/.env
   exit 1
-fi
+}
+: "${OUTLAYER_WALLET_API_KEY:?set OUTLAYER_WALLET_API_KEY in scripts/.env}"
+WHOAMI=$(outlayer whoami 2>/dev/null | head -n1 | grep -oE '[0-9a-f]{64}|[a-z0-9._-]+\.near' | head -n1)
+: "${WHOAMI:?log the CLI in first: outlayer login --wallet-key \$OUTLAYER_WALLET_API_KEY}"
+
+AUTHOR_BODY=$(python3 -c '
+import json, os
+print(json.dumps({"X_CLIENT_ID": os.environ["X_CLIENT_ID"], "X_CLIENT_SECRET": os.environ["X_CLIENT_SECRET"]}))')
+CALLER_BODY=$(python3 -c '
+import json, os
+print(json.dumps({
+  "X_REFRESH_TOKEN": os.environ["X_REFRESH_TOKEN"],
+  "X_POLICY": json.dumps(json.loads(os.environ["POLICY"]), separators=(",", ":")),
+}))' POLICY="$POLICY" X_REFRESH_TOKEN="$REFRESH" 2>/dev/null || \
+python3 - "$REFRESH" "$POLICY" <<'PY'
+import sys, json
+refresh, policy = sys.argv[1:3]
+print(json.dumps({"X_REFRESH_TOKEN": refresh, "X_POLICY": json.dumps(json.loads(policy), separators=(",", ":"))}))
+PY
+)
+
+outlayer secrets set "$AUTHOR_BODY" \
+  --project "$PROJECT" --profile author \
+  && echo "✓ author row stored (client pair, profile: author)" \
+  || STORE_ERR
+
+outlayer secrets set "$CALLER_BODY" \
+  --project "$PROJECT" --profile "$WHOAMI" \
+  && echo "✓ caller row stored (refresh + policy, profile: $WHOAMI)" \
+  || STORE_ERR
+
+echo "  Call the preview connector with secrets_ref {account: $WHOAMI, profile: $WHOAMI};"
+echo "  a CURATED connector takes the agent-secret route (X-Use-Owner-Secret: 1)."

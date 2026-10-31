@@ -117,4 +117,5 @@ if isinstance(output, dict) and "success" in output:
         error = output.get("error") or "(no error named)"
         print(f"✗ the connector refused: {error} — branch on its prefix (connector-core/src/refusal.rs)")
 elif answer.get("status") == "failed":
-    print(f"✗ the platform refused before the run: {answer.get(\"error\", \"\")}")' || true
+    err = answer.get("error", "")
+    print(f"✗ the platform refused before the run: {err}")' || true
