@@ -5,7 +5,7 @@
 //! |---|---|---|
 //! | `status` | read | whether the credential works — proved by refreshing it — which OAuth client the run used, the policy's caps, the caller's own posts today |
 //! | `me` | read | the connected account's handle, for the UI |
-//! | `post` | write | one post, policy-checked first; a task for the owner when their policy says `confirm` |
+//! | `post` | write | one post, policy-checked first; named `reply_to`, an answer to that tweet; a task for the owner when their policy says `confirm` |
 //! | `confirm` | write | run by the platform as the agent on the owner's approval: posts the text the task holds |
 //! | `task_status`, `task_cancel`, `task_delete`, `tasks`, `tasks_unlock` | | the tasks this caller made, and the owner's devices |
 //!
@@ -44,6 +44,9 @@ pub struct Input {
     /// `confirm`: what the owner wrote beside the approval, sealed to the
     /// task's reply key, in base64. Handed to the agent with the result.
     pub note: Option<String>,
+    /// `post`: the tweet this post answers — its id, or a status url the
+    /// connector resolves to one. Absent: the post is standalone.
+    pub reply_to: Option<String>,
 }
 
 /// Everything this connector sells. A name not here is refused with the list.
@@ -166,7 +169,7 @@ fn status(transport: &dyn Transport, store: &dyn RecordStore, secrets: &mut Secr
         "granted_scope": granted.scope,
         "policy": policy::view(policy::load()),
         "sent_today": sent,
-        "next": "`post` with `text`",
+        "next": "`post` with `text` (and `reply_to`, a tweet id or status url, to answer a post)",
     }))
 }
 
@@ -178,7 +181,7 @@ fn me(transport: &dyn Transport, store: &dyn RecordStore, secrets: &mut Secrets)
     Ok(json!({"id": account.id, "username": account.username, "name": account.name}))
 }
 
-/// One post, policy-checked first.
+/// One post, policy-checked first; named `reply_to`, a reply to that post.
 fn post(
     input: &Input,
     transport: &dyn Transport,
@@ -190,11 +193,21 @@ fn post(
         .as_deref()
         .ok_or_else(|| "`text` is required: the post carries it".to_string())?;
     policy::check_text(text)?;
+    // The reply target, resolved to its snowflake id before anything runs:
+    // a malformed one refuses here, at no cost and with no cap taken —
+    // the same pre-run refusal a bad text gets.
+    let reply_to = input
+        .reply_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+        .map(x_api::resolve_reply_to)
+        .transpose()?;
     let rules = policy::require()?;
     if rules.confirms(policy::Confirmable::Post) {
-        return confirm::ask(text);
+        return confirm::ask(text, reply_to);
     }
-    let prepared = confirm::Prepared { text: text.to_string() };
+    let prepared = confirm::Prepared { text: text.to_string(), reply_to };
     deliver(&rules, &prepared, transport, store, secrets, Counted::Own).map_err(|outcome| outcome.refusal())
 }
 
@@ -236,7 +249,7 @@ fn deliver(
     // post, and the answer falls back to the handle-less form.
     let handle = x_api::me(transport, &granted).ok().map(|account| account.username);
 
-    let tweet_id = match x_api::tweet(transport, &granted, &prepared.text) {
+    let tweet_id = match x_api::tweet(transport, &granted, &prepared.text, prepared.reply_to.as_deref()) {
         Ok(id) => id,
         // A post that may have left keeps its place in today's count: a
         // count one too high refuses a post, one too low allows one.
@@ -257,13 +270,19 @@ fn deliver(
         Some(username) => format!("https://x.com/{username}/status/{tweet_id}"),
         None => format!("https://x.com/i/web/status/{tweet_id}"),
     };
-    Ok(json!({
+    let mut answer = json!({
         "tweet_id": tweet_id,
         "url": url,
         "text": prepared.text,
         "sent_today": sent_today,
         "remaining_today": rules.max_per_day.zip(sent_today).map(|(cap, used)| cap.saturating_sub(used)),
-    }))
+    });
+    // The reply the post answered, as its id — evidence beside the tweet's.
+    // Absent on a standalone post, whose answer is shaped as it ever was.
+    if let Some(reply_to) = &prepared.reply_to {
+        answer["reply_to"] = json!(reply_to);
+    }
+    Ok(answer)
 }
 
 #[cfg(test)]
@@ -362,6 +381,38 @@ mod tests {
         assert_eq!(out["sent_today"], Value::Null, "no cap of the owner's, no count");
         assert_eq!(out["remaining_today"], Value::Null);
         assert_eq!(run.store.count("x:count"), 0, "nothing was counted");
+    }
+
+    /// A reply: the reply target is resolved before anything runs, carried
+    /// on the wire as the reply object, and named in the answer beside the
+    /// tweet's own evidence.
+    #[test]
+    fn a_post_with_reply_to_answers_as_a_reply_on_the_wire_and_in_the_answer() {
+        let mut run = Run::with(vec![grant(), me_ok(), tweet_ok()], r#"{"max_per_day":10}"#);
+        let mut input = post_input("gm");
+        input.reply_to = Some("https://x.com/elliot/status/1901?media=1".into());
+        let out = run.run("post", &input).unwrap();
+        assert_eq!(out["tweet_id"], "1901");
+        assert_eq!(out["reply_to"], "1901", "the answer names the reply the post answered");
+        let body = serde_json::from_slice::<Value>(&run.transport.seen.borrow()[2].2).unwrap();
+        assert_eq!(body["reply"]["in_reply_to_tweet_id"], json!("1901"));
+        assert_eq!(body["text"], json!("gm"));
+    }
+
+    /// A malformed `reply_to` refuses before anything runs — no X call, no
+    /// cap taken — the same cost-free pre-run refusal a bad text gets.
+    #[test]
+    fn a_malformed_reply_to_refuses_pre_run_at_no_cost() {
+        for bad in ["not a tweet", "https://example.com/elliot/status/1901"] {
+            let mut run = Run::with(vec![], r#"{"max_per_day":1}"#);
+            let mut input = post_input("gm");
+            input.reply_to = Some(bad.into());
+            let said = run.run("post", &input).unwrap_err();
+            assert!(said.refusal.starts_with("`reply_to` must be a tweet id or a status url: "), "{said:?}");
+            assert!(run.transport.seen.borrow().is_empty(), "nothing went out");
+            let key = policy::count_key(&connector_core::day_key(connector_core::now_ms()), Counted::Own);
+            assert_eq!(run.store.count(&key), 0, "the cap was not taken");
+        }
     }
 
     /// The daily cap: the place is taken before the post leaves and given
@@ -484,7 +535,7 @@ mod tests {
         assert_eq!(out["policy"]["max_per_day"], json!(3));
         assert_eq!(out["policy"]["confirm"], json!(["post"]));
         assert_eq!(out["sent_today"], json!(0));
-        assert_eq!(out["next"], "`post` with `text`");
+        assert_eq!(out["next"], "`post` with `text` (and `reply_to`, a tweet id or status url, to answer a post)");
     }
 
     /// The owner's own client is visible in what status reports: evidence,

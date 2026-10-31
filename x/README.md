@@ -24,9 +24,20 @@ Two hosts, both in the manifest: `api.twitter.com` (the token endpoint) and
 |---|---|---|
 | `status` | read | whether the credential works — **proved by refreshing it**, not guessed — which OAuth client the run used, the policy's caps, and the caller's own posts today |
 | `me` | read | the connected account's handle, id and display name, for the UI |
-| `post` | write | one post, policy-checked first; left as a task for the owner when their policy lists `post` under `confirm` |
+| `post` | write | one post, policy-checked first; left as a task for the owner when their policy lists `post` under `confirm`; named `reply_to`, an answer to that tweet |
 | `confirm` | write | run by the platform as the agent on the owner's approval: posts the text the task holds |
 | `task_status`, `task_cancel`, `task_delete`, `tasks`, `tasks_unlock` | | the tasks this caller made, and the owner's devices |
+
+## Replies
+
+A post that names `reply_to` goes out as a reply to that tweet — X's
+`reply.in_reply_to_tweet_id` object on `/2/tweets`, the reply member the
+v2 API wants. `reply_to` is a tweet id or a status url (`x.com` or
+`twitter.com`, `www.` or not, query and fragment carried along or not);
+anything else is refused before anything runs, at no cost. The answer
+names the resolved id as `reply_to` beside the tweet's, and a post left
+under `confirm` carries the reply target in its task, so the owner
+approves what will go out.
 
 ## The policy
 

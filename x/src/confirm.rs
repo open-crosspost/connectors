@@ -27,20 +27,35 @@ pub const ANSWERED_BY: &str = "confirm";
 #[serde(deny_unknown_fields)]
 pub struct Prepared {
     pub text: String,
+    /// When the post answers another post: its snowflake id, resolved by
+    /// `x_api::resolve_reply_to` before the post was prepared. `default`
+    /// reads states sealed by older builds, which held only a text.
+    #[serde(default)]
+    pub reply_to: Option<String>,
 }
 
-/// The post as the owner reads it: what is shown is what is sent.
-fn shown(text: &str) -> Prepared {
-    Prepared { text: text.replace("\r\n", "\n") }
+/// The post as the owner reads it: what is shown is what is sent — the
+/// reply target beside the text, when the post is a reply.
+fn shown(text: &str, reply_to: Option<String>) -> Prepared {
+    Prepared { text: text.replace("\r\n", "\n"), reply_to }
 }
 
 fn display(prepared: &Prepared) -> Result<Display, String> {
-    Ok(Display::new("Post to X").field("Text", FieldKind::LongText, &prepared.text, WrittenBy::Agent))
+    let display = Display::new("Post to X").field("Text", FieldKind::LongText, &prepared.text, WrittenBy::Agent);
+    match &prepared.reply_to {
+        Some(id) => Ok(display.field(
+            "Reply to",
+            FieldKind::Text,
+            &format!("https://x.com/i/web/status/{id}"),
+            WrittenBy::Project,
+        )),
+        None => Ok(display),
+    }
 }
 
-/// Leave `text`, which passed the owner's rules, as a task for the owner.
-pub fn ask(text: &str) -> Result<Value, String> {
-    let prepared = shown(text);
+/// Leave a post, which passed the owner's rules, as a task for the owner.
+pub fn ask(text: &str, reply_to: Option<String>) -> Result<Value, String> {
+    let prepared = shown(text, reply_to);
     let state = serde_json::to_vec(&prepared).map_err(|e| format!("the post could not be kept: {e}"))?;
     let task = tasks::confirm(display(&prepared)?, ANSWERED_BY, &state, &policy::stored());
     let opened = task.open().map_err(|e| e.refusal())?;
@@ -193,7 +208,7 @@ mod tests {
             preparer: "agent.testnet".into(),
             kind: tasks::TaskKind::Confirm,
             operation: ANSWERED_BY.into(),
-            state: serde_json::to_vec(&shown(text)).unwrap(),
+            state: serde_json::to_vec(&shown(text, None)).unwrap(),
             files: Vec::new(),
             supplied: None,
             note: None,
@@ -239,6 +254,7 @@ mod tests {
             task_hash: Some("ab".repeat(32)),
             approval: Some(serde_json::json!({"at": 1, "public_key": "k", "signature": "s", "nonce": "n"})),
             note: None,
+            reply_to: None,
         };
         let no_policy = before_answer(&call(), policy::Loaded::None).unwrap_err();
         assert!(no_policy.starts_with("policy_denied: "), "{no_policy}");
@@ -276,7 +292,10 @@ mod tests {
         assert_eq!((id.as_str(), why.as_str()), ("run-0", said.as_str()));
 
         // A post the rules refuse: an empty text, under any rules.
-        let empty = tasks::Answer { state: serde_json::to_vec(&shown("   ")).unwrap(), ..answer_holding("gm") };
+        let empty = tasks::Answer {
+            state: serde_json::to_vec(&shown("   ", None)).unwrap(),
+            ..answer_holding("gm")
+        };
         let said = after_answer(&rules(), &empty, &transport, &store, &mut secrets, never_reports, fails).unwrap_err();
         assert!(said.starts_with("`text` is required"), "{said}");
         assert!(said.ends_with(CLOSED), "{said}");
@@ -338,6 +357,49 @@ mod tests {
         let day = connector_core::day_key(connector_core::now_ms());
         let key = policy::count_key(&day, policy::Counted::Confirmed);
         assert_eq!(store.count(&key), 1);
+    }
+
+    /// A task that holds a reply posts as a reply on the wire, and the
+    /// reply target rides in the result the agent reads back.
+    #[test]
+    fn a_confirmed_task_that_holds_a_reply_posts_and_reports_a_reply() {
+        let _row = env_row();
+        let transport = MockTransport::with(vec![
+            MockTransport::ok(200, serde_json::json!({"expires_in": 7200, "access_token": "AT", "scope": "tweet.write users.read"})),
+            MockTransport::ok(200, serde_json::json!({"data": {"id": "1", "username": "elliot", "name": "Elliot"}})),
+            MockTransport::ok(201, serde_json::json!({"data": {"id": "1902", "text": "gm"}})),
+        ]);
+        let store = MemStore::default();
+        let mut secrets = Secrets::default();
+        let answer =
+            tasks::Answer { state: serde_json::to_vec(&shown("gm", Some("1901".into()))).unwrap(), ..answer_holding("gm") };
+        let out =
+            after_answer(&rules(), &answer, &transport, &store, &mut secrets, |_, _| Ok(()), never_fails).unwrap();
+        assert_eq!(out["tweet_id"], "1902");
+        assert_eq!(out["reply_to"], "1901");
+        let body = serde_json::from_slice::<Value>(&transport.seen.borrow()[2].2).unwrap();
+        assert_eq!(body["reply"]["in_reply_to_tweet_id"], serde_json::json!("1901"), "{body}");
+    }
+
+    /// A task sealed by an older build holds a text alone: it reads as a
+    /// standalone post, not as unreadable.
+    #[test]
+    fn a_state_of_an_older_build_reads_as_a_standalone_post() {
+        let prepared = held(b"{\"text\":\"gm\"}").unwrap();
+        assert_eq!(prepared, Prepared { text: "gm".into(), reply_to: None });
+    }
+
+    /// What `ask` seals is read back exactly — the reply target rides
+    /// beside the text, so the owner approves what the run will post.
+    #[test]
+    fn what_the_task_seals_of_a_reply_reads_back_whole() {
+        for prepared in [
+            shown("gm", Some("1901".into())),
+            shown("gm", None),
+            shown("gm\r\nhttp://not-a-url-but-just-text", Some("https://x.com/i/web/status/1901".into())),
+        ] {
+            assert_eq!(held(&serde_json::to_vec(&prepared).unwrap()).unwrap(), prepared);
+        }
     }
 
     /// The owner's note reaches the agent with the result, and changes

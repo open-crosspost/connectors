@@ -53,13 +53,19 @@
       },
       "post": {
         "class": "write",
-        "doc": "One post, policy-checked, then published — or, when the owner's policy lists `post` under `confirm`, left as a task for the owner and answered `awaiting_owner`. The answer carries the tweet id and its url.",
+        "doc": "One post, policy-checked, then published — or, when the owner's policy lists `post` under `confirm`, left as a task for the owner and answered `awaiting_owner`. The answer carries the tweet id and its url. Named `reply_to`, it answers that post instead of standing alone.",
         "params": [
           {
             "name": "text",
             "type": "string",
             "required": true,
             "doc": "1 to 280 characters; posted as written."
+          },
+          {
+            "name": "reply_to",
+            "type": "string",
+            "required": false,
+            "doc": "The tweet this post answers — its id, or its status url (x.com or twitter.com). Refused pre-run when it names neither. Absent: the post stands alone."
           }
         ]
       },

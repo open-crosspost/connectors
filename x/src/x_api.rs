@@ -71,9 +71,16 @@ pub fn me(transport: &dyn Transport, granted: &Granted) -> Result<Account, Strin
 }
 
 /// One post, answered as its tweet id, or as [`Outcome`]: refused outright
-/// (nothing happened), or unknown (it MAY have gone out).
-pub fn tweet(transport: &dyn Transport, granted: &Granted, text: &str) -> Result<String, Outcome> {
-    let body = serde_json::to_vec(&serde_json::json!({ "text": text })).unwrap_or_default();
+/// (nothing happened), or unknown (it MAY have gone out). `reply_to` is
+/// the resolved snowflake id the post answers — [`resolve_reply_to`]
+/// got it there; absent, the post is standalone.
+pub fn tweet(transport: &dyn Transport, granted: &Granted, text: &str, reply_to: Option<&str>) -> Result<String, Outcome> {
+    let mut body_value = serde_json::json!({ "text": text });
+    if let Some(id) = reply_to {
+        // Bare `in_reply_to_tweet_id` is v1.1-only: /2/tweets wants the reply object.
+        body_value["reply"] = serde_json::json!({ "in_reply_to_tweet_id": id.trim() });
+    }
+    let body = serde_json::to_vec(&body_value).unwrap_or_default();
     let response = match ask(
         transport,
         Method::Post,
@@ -110,7 +117,51 @@ pub fn tweet(transport: &dyn Transport, granted: &Granted, text: &str) -> Result
     }
 }
 
-/// The one HTTPS exchange, with the bearer on it.
+/// The tweet a reply answers, as its snowflake id: a bare id, or the id
+/// inside a status url — `https://x.com/<user>/status/<id>`, `twitter.com`
+/// and `www.` included, query and fragment carried along or not. Everything
+/// else is refused, in the caller's own sentence, before anything leaves
+/// and at no cost: agents hand URLs around, so they are welcome here too.
+pub fn resolve_reply_to(raw: &str) -> Result<String, String> {
+    let refusal = |why: String| format!("`reply_to` must be a tweet id or a status url: {why}");
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(refusal("`reply_to` is empty".into()));
+    }
+    if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(trimmed.to_string());
+    }
+    let (scheme, rest) = match trimmed.split_once("://") {
+        Some(parts) => parts,
+        None => return Err(refusal(format!("`{trimmed}` is neither an id nor a url"))),
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    if !matches!(scheme.as_str(), "http" | "https") {
+        return Err(refusal(format!("the scheme is `{scheme}`, not http(s)")));
+    }
+    let (host, path) = match rest.split_once('/') {
+        Some(parts) => parts,
+        None => return Err(refusal(format!("`{rest}` carries no path"))),
+    };
+    let host = host.strip_prefix("www.").unwrap_or(host).to_ascii_lowercase();
+    if !matches!(host.as_str(), "x.com" | "twitter.com") {
+        return Err(refusal(format!("`{host}` is not an X host")));
+    }
+    // The status path: every segment up to and after `status`, cut clean of
+    // its query and fragment.
+    let mut segments = path.split('/').map(|segment| segment.split(['?', '#']).next().unwrap_or(""));
+    let status_named = segments.by_ref().any(|segment| segment == "status");
+    if !status_named {
+        return Err(refusal(format!("`{host}{path}` carries no `status` path")));
+    }
+    match segments.next() {
+        Some(id) if !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()) => Ok(id.to_string()),
+        Some(other) => Err(refusal(format!("`{other}` where `status` is followed by a tweet id"))),
+        None => Err(refusal(format!("`{host}{path}` carries no tweet id after `status`"))),
+    }
+}
+
+/// One HTTPS exchange, with the bearer on it.
 fn ask(transport: &dyn Transport, method: Method, path: &str, bearer: &str, body: Option<&[u8]>) -> Result<Response, String> {
     transport
         .send(
@@ -191,39 +242,96 @@ mod tests {
     fn a_posts_outcome_is_posted_refused_or_unknown() {
         let g = granted("tweet.write users.read");
 
-        let posted = tweet(&MockTransport::with(vec![ok_tweet()]), &g, "gm").unwrap();
+        let posted = tweet(&MockTransport::with(vec![ok_tweet()]), &g, "gm", None).unwrap();
         assert_eq!(posted, "1901");
 
         // X's throttle: nothing was posted; wait, then retry.
-        let throttled = tweet(&MockTransport::with(vec![refused(429, "Rate limit exceeded")]), &g, "gm").unwrap_err();
+        let throttled = tweet(&MockTransport::with(vec![refused(429, "Rate limit exceeded")]), &g, "gm", None).unwrap_err();
         assert!(matches!(&throttled, Outcome::Refused(s) if s.starts_with("rate_limited: ")), "{throttled:?}");
 
         // A dead access token mid-flight: the owner reconnects.
-        let dead = tweet(&MockTransport::with(vec![refused(401, "Unauthorized")]), &g, "gm").unwrap_err();
+        let dead = tweet(&MockTransport::with(vec![refused(401, "Unauthorized")]), &g, "gm", None).unwrap_err();
         assert!(matches!(&dead, Outcome::Refused(s) if s.starts_with("credential_rejected: ")), "{dead:?}");
 
         // The scope missing: refused before the call, never a 403 from X.
         let no_scope = granted("users.read");
-        let refused_scope = tweet(&MockTransport::with(vec![refused(403, "not allowed")]), &no_scope, "gm").unwrap_err();
+        let refused_scope = tweet(&MockTransport::with(vec![refused(403, "not allowed")]), &no_scope, "gm", None).unwrap_err();
         assert!(matches!(&refused_scope, Outcome::Refused(s) if s.starts_with("scope_missing: ")), "{refused_scope:?}");
 
         // A 403 with the scope granted is X's own word on this post.
-        let account_refused = tweet(&MockTransport::with(vec![refused(403, "client-not-enrolled")]), &g, "gm").unwrap_err();
+        let account_refused = tweet(&MockTransport::with(vec![refused(403, "client-not-enrolled")]), &g, "gm", None).unwrap_err();
         assert!(matches!(&account_refused, Outcome::Refused(s) if s.starts_with("X refused /2/tweets: HTTP 403 ")), "{account_refused:?}");
 
         // Other 4xx: refused outright, in X's own words.
-        let bad = tweet(&MockTransport::with(vec![refused(400, "could not authenticate you")]), &g, "gm").unwrap_err();
+        let bad = tweet(&MockTransport::with(vec![refused(400, "could not authenticate you")]), &g, "gm", None).unwrap_err();
         assert!(matches!(&bad, Outcome::Refused(s) if s.contains("could not authenticate you")), "{bad:?}");
 
         // A 5xx: the request went out, or may have — UNKNOWN.
-        let backend = tweet(&MockTransport::with(vec![refused(503, "backend")]), &g, "gm").unwrap_err();
+        let backend = tweet(&MockTransport::with(vec![refused(503, "backend")]), &g, "gm", None).unwrap_err();
         assert!(backend.is_unknown(), "{backend:?}");
         let said = backend.refusal();
         assert!(said.contains("do not resend blind"), "{said}");
 
         // No answer at all: UNKNOWN, the same discipline.
-        let lost = tweet(&MockTransport::with(vec![MockTransport::network("connection reset")]), &g, "gm").unwrap_err();
+        let lost = tweet(&MockTransport::with(vec![MockTransport::network("connection reset")]), &g, "gm", None).unwrap_err();
         assert!(lost.is_unknown(), "{lost:?}");
+    }
+
+    /// The reply, on the wire: the /2/tweets body carries the reply object
+    /// the id names, and the text beside it.
+    #[test]
+    fn a_reply_posts_the_reply_object_on_the_wire() {
+        let g = granted("tweet.write");
+        let transport = MockTransport::with(vec![ok_tweet()]);
+        let posted = tweet(&transport, &g, "gm", Some("1901")).unwrap();
+        assert_eq!(posted, "1901");
+        let body = serde_json::from_slice::<serde_json::Value>(&transport.seen.borrow()[0].2).unwrap();
+        assert_eq!(body["reply"]["in_reply_to_tweet_id"], serde_json::json!("1901"));
+        assert_eq!(body["text"], serde_json::json!("gm"));
+    }
+
+    /// A standalone post names no reply member at all: absent means absent,
+    /// not null and not an empty reply.
+    #[test]
+    fn a_standalone_post_names_no_reply_member() {
+        let g = granted("tweet.write");
+        let transport = MockTransport::with(vec![ok_tweet()]);
+        tweet(&transport, &g, "gm", None).unwrap();
+        let body = serde_json::from_slice::<serde_json::Value>(&transport.seen.borrow()[0].2).unwrap();
+        assert!(body.get("reply").is_none(), "no reply member on a standalone post");
+    }
+
+    /// What `reply_to` resolves: a bare id, or the id in a status url of
+    /// either host — and what it refuses, all of it before anything runs.
+    #[test]
+    fn the_reply_target_resolves_to_a_snowflake_id() {
+        for (given, want) in [
+            ("1901", "1901"),
+            (" 1901 ", "1901"),
+            ("https://x.com/elliot/status/1901", "1901"),
+            ("https://x.com/elliot/status/1901?cmt=yes#m", "1901"),
+            ("https://www.x.com/elliot/status/1901", "1901"),
+            ("https://twitter.com/elliot/status/1901", "1901"),
+            ("http://x.com/elliot/status/1901", "1901"),
+            ("https://x.com/i/web/status/1901", "1901"),
+            ("HTTPS://x.com/elliot/status/1901", "1901"),
+        ] {
+            assert_eq!(resolve_reply_to(given).unwrap(), want, "`{given}` did not resolve");
+        }
+        for bad in [
+            "",
+            "   ",
+            "not a tweet",
+            "justtext.com/status/1901",
+            "ftp://x.com/elliot/status/1901",
+            "https://example.com/elliot/status/1901",
+            "https://x.com/elliot/posts/1901",
+            "https://x.com/elliot/status/",
+            "https://x.com/elliot/status/not-a-tweet",
+        ] {
+            let said = resolve_reply_to(bad).unwrap_err();
+            assert!(said.starts_with("`reply_to` must be a tweet id or a status url: "), "{said}");
+        }
     }
 
     /// An X answer this build cannot read as a post is not a refusal: it is
@@ -235,6 +343,7 @@ mod tests {
             &MockTransport::with(vec![MockTransport::ok(201, serde_json::json!({"data": {"text": "gm"}}))]),
             &g,
             "gm",
+            None,
         ).unwrap_err();
         assert!(odd.is_unknown(), "{odd:?}");
     }
