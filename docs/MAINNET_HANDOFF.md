@@ -9,20 +9,25 @@ curation gate — nothing runs on mainnet before their side acts.
 
 - **project id:** `connectors.outlayer.near/x`
 - **connector_id:** `x`
-- **source:** https://github.com/open-crosspost/connectors (tag `v0.1.0`)
-- **wasm:** https://github.com/open-crosspost/connectors/releases/download/v0.1.0/x-connector.wasm
-- **SHA256:** `d382383a2ab088f46b24090ae0c269e01c8c21e25f6721f4769ec947f8dcdb44`
+- **source:** https://github.com/open-crosspost/connectors (tag `v0.1.2`)
+- **wasm:** https://github.com/open-crosspost/connectors/releases/download/v0.1.2/x-connector.wasm
+- **SHA256:** `d8c2e0f615713109413d283407b27c20a2101344490741947bf046e2b465eb45`
   (the release URL serves exactly these bytes — verified; the worker verifies
   the same hash before executing)
-- **target:** `wasm32-wasip2`, 534 KB
+- **target:** `wasm32-wasip2`, 540 KB
+- **what this version adds** (issue #1): `post` carries an optional
+  `reply_to` — a tweet id or a status url, resolved pre-run at no cost —
+  and `/2/tweets` gains the `reply` object; absent `reply_to`, the wire
+  and the answer are exactly as v0.1.0's. No new operation, so the price
+  rows and the author row carry over unchanged.
 
 ## 1. add_version — signed by `connectors.outlayer.near`, `set_active: false`
 
 ```bash
 near contract call-function as-transaction outlayer.near add_version \
   json-args '{"project_name":"x",
-              "source":{"WasmUrl":{"url":"https://github.com/open-crosspost/connectors/releases/download/v0.1.0/x-connector.wasm",
-                                   "hash":"d382383a2ab088f46b24090ae0c269e01c8c21e25f6721f4769ec947f8dcdb44",
+              "source":{"WasmUrl":{"url":"https://github.com/open-crosspost/connectors/releases/download/v0.1.2/x-connector.wasm",
+                                   "hash":"d8c2e0f615713109413d283407b27c20a2101344490741947bf046e2b465eb45",
                                    "build_target":"wasm32-wasip2"}},
               "set_active":false}' \
   prepaid-gas '100.0 Tgas' attached-deposit '0.1 NEAR' \
@@ -30,25 +35,20 @@ near contract call-function as-transaction outlayer.near add_version \
 ```
 
 `set_active: false` first: nothing any caller runs changes until the
-activation, the previous version (there is none — this is v1) stays
-published, and a rollback is one `set_active_version`.
+activation — v0.1.0 (sha256 `d382383a2ab088f46b24090ae0c269e01c8c21e25f6721f4769ec947f8dcdb44`,
+still fetched from its own release URL) stays published, and a rollback
+is one `set_active_version` naming its hash.
 
-## 2. Price rows — signed by the contract owner
+## 2. Price rows — no change
 
-```bash
-CONTRACT=outlayer.near OWNER=<owner> ./x/set-prices.sh mainnet
-```
-
-The script refuses to price anything the manifest does not declare (and vice
-versa). The rows: `status`, `me`, `confirm`, `task_*` — free;
-`post` — $0.01 (`10000`), `developer_share_bp: 0` (the author is the
-namespace; the whole fee stays with the project's owner). Then the
-coordinator refresh (the script does both halves).
+Every operation of v0.1.0 is priced already, and v0.1.2 adds none
+(`reply_to` is a parameter of `post`, not an operation). Only touch
+`x/set-prices.sh` if a price should move with this release.
 
 ## 3. Activate
 
 ```bash
-HASH=d382383a2ab088f46b24090ae0c269e01c8c21e25f6721f4769ec947f8dcdb44 \
+HASH=d8c2e0f615713109413d283407b27c20a2101344490741947bf046e2b465eb45 \
   scripts/publish.sh x mainnet activate
 ```
 
