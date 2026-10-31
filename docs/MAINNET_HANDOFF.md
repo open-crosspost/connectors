@@ -9,25 +9,30 @@ curation gate — nothing runs on mainnet before their side acts.
 
 - **project id:** `connectors.outlayer.near/x`
 - **connector_id:** `x`
-- **source:** https://github.com/open-crosspost/connectors (tag `v0.1.2`)
-- **wasm:** https://github.com/open-crosspost/connectors/releases/download/v0.1.2/x-connector.wasm
-- **SHA256:** `d8c2e0f615713109413d283407b27c20a2101344490741947bf046e2b465eb45`
+- **source:** https://github.com/open-crosspost/connectors (tag `v0.2.0`)
+- **wasm:** https://github.com/open-crosspost/connectors/releases/download/v0.2.0/x-connector.wasm
+- **SHA256:** `8dc9bb10479186c81f691773889574addbf2a8627bd869a2a54cc65268d0aa91`
   (the release URL serves exactly these bytes — verified; the worker verifies
   the same hash before executing)
-- **target:** `wasm32-wasip2`, 540 KB
-- **what this version adds** (issue #1): `post` carries an optional
-  `reply_to` — a tweet id or a status url, resolved pre-run at no cost —
-  and `/2/tweets` gains the `reply` object; absent `reply_to`, the wire
-  and the answer are exactly as v0.1.0's. No new operation, so the price
-  rows and the author row carry over unchanged.
+- **target:** `wasm32-wasip2`, 580 KB
+- **what this bundle adds** (issue #2, superseding the un-activated
+  v0.1.2 — this is THE one upgrade to sign): `retweet` (X's repost,
+  counted with the posts in the daily cap, confirmable as `repost`),
+  `unretweet` (the account's own stamp back; never counted), `delete`
+  (only the account's own post; **the owner confirms by default** — an
+  absent `confirm` member asks, a spelled one, even `[]`, is the whole
+  word), and `poll` on `post`. Every tweet-ref (`reply_to`, each
+  `tweet_id`) accepts a bare id or a status url; malformed input refuses
+  pre-run at no cost. Same credential, same scopes, same hosts: no
+  re-consent for existing connections. v0.1.2's reply support is included.
 
 ## 1. add_version — signed by `connectors.outlayer.near`, `set_active: false`
 
 ```bash
 near contract call-function as-transaction outlayer.near add_version \
   json-args '{"project_name":"x",
-              "source":{"WasmUrl":{"url":"https://github.com/open-crosspost/connectors/releases/download/v0.1.2/x-connector.wasm",
-                                   "hash":"d8c2e0f615713109413d283407b27c20a2101344490741947bf046e2b465eb45",
+              "source":{"WasmUrl":{"url":"https://github.com/open-crosspost/connectors/releases/download/v0.2.0/x-connector.wasm",
+                                   "hash":"8dc9bb10479186c81f691773889574addbf2a8627bd869a2a54cc65268d0aa91",
                                    "build_target":"wasm32-wasip2"}},
               "set_active":false}' \
   prepaid-gas '100.0 Tgas' attached-deposit '0.1 NEAR' \
@@ -39,16 +44,23 @@ activation — v0.1.0 (sha256 `d382383a2ab088f46b24090ae0c269e01c8c21e25f6721f47
 still fetched from its own release URL) stays published, and a rollback
 is one `set_active_version` naming its hash.
 
-## 2. Price rows — no change
+## 2. Price rows — one call, this bundle's only pricing change
 
-Every operation of v0.1.0 is priced already, and v0.1.2 adds none
-(`reply_to` is a parameter of `post`, not an operation). Only touch
-`x/set-prices.sh` if a price should move with this release.
+The manifest now declares three operations more than the priced rows
+hold, and an unpriced operation is refused `unknown_operation` before it
+runs. `x/set-prices.sh mainnet` writes the whole table in one call:
+`retweet` rides with `post` at $0.01 (X bills the app for every write
+either way); `unretweet` and `delete` are free — safety operations.
+Rows, coordinator refresh, both halves, one run:
+
+```bash
+CONTRACT=outlayer.near OWNER=<owner> ./x/set-prices.sh mainnet
+```
 
 ## 3. Activate
 
 ```bash
-HASH=d8c2e0f615713109413d283407b27c20a2101344490741947bf046e2b465eb45 \
+HASH=8dc9bb10479186c81f691773889574addbf2a8627bd869a2a54cc65268d0aa91 \
   scripts/publish.sh x mainnet activate
 ```
 
