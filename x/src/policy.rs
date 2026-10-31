@@ -44,12 +44,30 @@ pub struct Policy {
 #[serde(rename_all = "snake_case")]
 pub enum Confirmable {
     Post,
+    /// A repost: X calls it one, agents call it a retweet — the same stamp,
+    /// counted with the posts in the daily cap.
+    Repost,
+    /// A post withdrawn entirely. X refuses anything the account did not
+    /// author, and a delete answers to no retry — one signature is what
+    /// keeps a runaway loop from erasing the owner's timeline.
+    Delete,
 }
 
 impl Policy {
     /// Does `operation` need the owner?
+    ///
+    /// The `confirm` list is the owner's whole word about confirmation: every
+    /// operation it names waits for their approval, and a policy that spells
+    /// the member — even spelled empty — has said all it wants, so nothing is
+    /// added to it. A policy with NO `confirm` member at all has said very
+    /// little, and one operation refuses to take that silence for a yes: a
+    /// delete overdue is an erased timeline, not a late post, so it asks the
+    /// owner by default. `{"confirm":[]}` is the explicit opt-out.
     pub fn confirms(&self, operation: Confirmable) -> bool {
-        self.confirm.as_ref().is_some_and(|listed| listed.contains(&operation))
+        match self.confirm.as_ref() {
+            Some(listed) => listed.contains(&operation),
+            None => matches!(operation, Confirmable::Delete),
+        }
     }
 }
 
@@ -122,9 +140,34 @@ mod tests {
             assert!(!quiet.confirms(Confirmable::Post));
         }
         // An operation that cannot be confirmed is a policy that cannot be read.
-        for unread in [r#"{"confirm":["send"]}"#, r#"{"confirm":["Post"]}"#, r#"{"confirm":"post"}"#] {
+        for unread in [r#"{"confirm":["send"]}"#, r#"{"confirm":["Post"]}"#, r#"{"confirm":"post"}"#, r#"{"confirm":["like"]}"#] {
             assert!(serde_json::from_str::<Policy>(unread).is_err(), "{unread}");
         }
+    }
+
+    /// What the new operations confirm: reposts the owner lists, and nothing
+    /// else; a delete waits for the owner whenever the policy's `confirm` is
+    /// unsaid — an absent one asks, a spelled one (even empty) is the whole
+    /// word, and nothing is added to it.
+    #[test]
+    fn a_repost_confirms_only_when_listed_and_a_delete_asks_by_default() {
+        let silent: Policy = policy("{}");
+        assert!(silent.confirms(Confirmable::Delete), "a delete takes no silence for a yes");
+        assert!(!silent.confirms(Confirmable::Post));
+        assert!(!silent.confirms(Confirmable::Repost));
+
+        // A `confirm` spelled at all is the whole word, even `[]`:
+        let opted_out: Policy = policy(r#"{"confirm":[]}"#);
+        assert!(!opted_out.confirms(Confirmable::Delete), "the explicit opt-out");
+        let post_only: Policy = policy(r#"{"confirm":["post"]}"#);
+        assert!(!post_only.confirms(Confirmable::Delete), "nothing is added to a spelled list");
+        assert!(!post_only.confirms(Confirmable::Repost));
+        assert!(post_only.confirms(Confirmable::Post));
+
+        // And either may be listed like any other:
+        let guards: Policy = policy(r#"{"confirm":["repost","delete"]}"#);
+        assert!(guards.confirms(Confirmable::Repost) && guards.confirms(Confirmable::Delete));
+        assert!(!guards.confirms(Confirmable::Post));
     }
 
     #[test]

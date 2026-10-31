@@ -29,11 +29,14 @@ impl Response {
 }
 
 /// The method of one HTTPS exchange. GET is safe to retry; POST is what
-/// every unknown-outcome question is about.
+/// every unknown-outcome question is about; DELETE is POST's evil twin —
+/// X's `unretweet` and `delete` — whose unknown outcome means the action
+/// may have happened and cannot be taken twice with meaning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     Get,
     Post,
+    Delete,
 }
 
 pub trait Transport {
@@ -64,6 +67,9 @@ impl Transport for WasiTransport {
         let builder = match method {
             Method::Get => builder.get(url),
             Method::Post => builder.post(url),
+            // X's unretweet and delete: the body is the path (or absent), and
+            // the answer is the status — wasi:http carries DELETE as-is.
+            Method::Delete => builder.delete(url),
         };
         let mut builder = builder;
         for (name, value) in headers {

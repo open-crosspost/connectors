@@ -8,6 +8,9 @@
     "status",
     "me",
     "post",
+    "retweet",
+    "unretweet",
+    "delete",
     "confirm",
     "task_status",
     "task_cancel",
@@ -26,6 +29,24 @@
       "operation": "post",
       "window": "day",
       "max_count": 500,
+      "applies": "everyone"
+    },
+    {
+      "operation": "retweet",
+      "window": "day",
+      "max_count": 500,
+      "applies": "everyone"
+    },
+    {
+      "operation": "unretweet",
+      "window": "day",
+      "max_count": 500,
+      "applies": "everyone"
+    },
+    {
+      "operation": "delete",
+      "window": "day",
+      "max_count": 50,
       "applies": "everyone"
     },
     {
@@ -53,7 +74,7 @@
       },
       "post": {
         "class": "write",
-        "doc": "One post, policy-checked, then published — or, when the owner's policy lists `post` under `confirm`, left as a task for the owner and answered `awaiting_owner`. The answer carries the tweet id and its url. Named `reply_to`, it answers that post instead of standing alone.",
+        "doc": "One post, policy-checked, then published — or, when the owner's policy lists `post` under `confirm`, left as a task for the owner and answered `awaiting_owner`. The answer carries the tweet id and its url. Named `reply_to`, it answers that post instead of standing alone; named `poll`, it opens a poll.",
         "params": [
           {
             "name": "text",
@@ -66,12 +87,54 @@
             "type": "string",
             "required": false,
             "doc": "The tweet this post answers — its id, or its status url (x.com or twitter.com). Refused pre-run when it names neither. Absent: the post stands alone."
+          },
+          {
+            "name": "poll",
+            "type": "object",
+            "required": false,
+            "doc": "X's poll: \"options\" are 2 to 4 options of 1 to 25 characters, \"duration_minutes\" 5 to 10080 (5 minutes to a week). Refused pre-run when the shape is off."
+          }
+        ]
+      },
+      "retweet": {
+        "class": "write",
+        "doc": "Repost one tweet (X's repost): the connected account's stamp on it. Counted with the posts in the owner's daily cap, and left as a task for the owner when their policy lists `repost` under `confirm`. The answer carries X's own word (`retweeted`) and the tweet's url.",
+        "params": [
+          {
+            "name": "tweet_id",
+            "type": "string",
+            "required": true,
+            "doc": "The tweet to stamp — its id, or its status url (x.com or twitter.com). Refused pre-run when it names neither."
+          }
+        ]
+      },
+      "unretweet": {
+        "class": "write",
+        "doc": "A repost taken back — only the connected account's own stamp, X refusing the rest. Not counted: removal is not output.",
+        "params": [
+          {
+            "name": "tweet_id",
+            "type": "string",
+            "required": true,
+            "doc": "The tweet whose stamp comes off — its id, or its status url. Refused pre-run when it names neither."
+          }
+        ]
+      },
+      "delete": {
+        "class": "write",
+        "doc": "One post withdrawn entirely — only one this account authored, X refusing the rest. The owner's confirmation is asked by default: a policy with no `confirm` member confirms every delete; a policy that spells one (even empty) has said in full what confirms. Not counted: removal is not output.",
+        "params": [
+          {
+            "name": "tweet_id",
+            "type": "string",
+            "required": true,
+            "doc": "The post to withdraw — its id, or its status url. Refused pre-run when it names neither."
           }
         ]
       },
       "confirm": {
         "class": "write",
-        "doc": "Carried out by a run of the agent that prepared the task, started by the platform on the owner's signed approval and paid by the agent's key: posts the text the task holds, under the policy the task was made under. The owner's note, when they wrote one, goes to the agent with the result.",
+        "doc": "Carried out by a run of the agent that prepared the task, started by the platform on the owner's signed approval and paid by the agent's key: carries out what the task holds (a post, a repost or a delete), under the policy the task was made under. The owner's note, when they wrote one, goes to the agent with the result.",
         "params": [
           {
             "name": "task_id",

@@ -61,9 +61,11 @@ print(f"Manifest: {len(declared)} operations agree with the price list")
 PYCHECK
 
 # `status` and `me` are free, so an agent can see its own limits and the
-# connected handle before spending anything. `post` is a cent, paid by whoever
-# asks for it: the agent. The owner's `confirm` of a post already paid for is
-# free, and so is asking where a task stands.
+# connected handle before spending anything. `post` and `retweet` are a cent,
+# paid by whoever asks for it: the agent (X bills the app for every write
+# either way). The owner's `confirm` of an action already paid for is free,
+# and so is asking where a task stands. `unretweet` and `delete` are free —
+# safety operations, and X bills the deletions that happen regardless.
 near call "$CONTRACT" set_project_pricing "$(cat <<JSON
 {
   "project_id": "$PROJECT",
@@ -73,6 +75,9 @@ near call "$CONTRACT" set_project_pricing "$(cat <<JSON
       {"operation": "status",       "price_usd": "0",     "developer_share_bp": 0},
       {"operation": "me",           "price_usd": "0",     "developer_share_bp": 0},
       {"operation": "post",         "price_usd": "10000", "developer_share_bp": 0},
+      {"operation": "retweet",      "price_usd": "10000", "developer_share_bp": 0},
+      {"operation": "unretweet",    "price_usd": "0",     "developer_share_bp": 0},
+      {"operation": "delete",       "price_usd": "0",     "developer_share_bp": 0},
       {"operation": "confirm",      "price_usd": "0",     "developer_share_bp": 0},
       {"operation": "task_status",  "price_usd": "0",     "developer_share_bp": 0},
       {"operation": "task_cancel",  "price_usd": "0",     "developer_share_bp": 0},

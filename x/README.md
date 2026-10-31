@@ -24,20 +24,38 @@ Two hosts, both in the manifest: `api.twitter.com` (the token endpoint) and
 |---|---|---|
 | `status` | read | whether the credential works — **proved by refreshing it**, not guessed — which OAuth client the run used, the policy's caps, and the caller's own posts today |
 | `me` | read | the connected account's handle, id and display name, for the UI |
-| `post` | write | one post, policy-checked first; left as a task for the owner when their policy lists `post` under `confirm`; named `reply_to`, an answer to that tweet |
-| `confirm` | write | run by the platform as the agent on the owner's approval: posts the text the task holds |
+| `post` | write | one post, policy-checked first; left as a task for the owner when their policy lists `post` under `confirm`; named `reply_to`, an answer to that tweet; named `poll`, the opener of one |
+| `retweet` | write | one repost — the account's stamp on another tweet, counted with the posts in the daily cap; a task for the owner when their policy lists `repost` |
+| `unretweet` | write | one repost taken back — only the account's own, never counted |
+| `delete` | write | one post withdrawn entirely, only one the account authored; the owner confirms it unless their policy's `confirm` says otherwise in full |
+| `confirm` | write | run by the platform as the agent on the owner's approval: does what the task holds |
 | `task_status`, `task_cancel`, `task_delete`, `tasks`, `tasks_unlock` | | the tasks this caller made, and the owner's devices |
 
-## Replies
+## Replies, reposts, deletions, polls
 
 A post that names `reply_to` goes out as a reply to that tweet — X's
 `reply.in_reply_to_tweet_id` object on `/2/tweets`, the reply member the
-v2 API wants. `reply_to` is a tweet id or a status url (`x.com` or
+v2 API wants. A post that names `poll` opens one: 2 to 4 options of 1 to
+25 characters, open for 5 minutes to a week, a shape of its own and
+validated separately. Every tweet-ref the connector's operations name —
+`reply_to`, and each of `retweet`, `unretweet` and `delete`'s
+`tweet_id` — accepts a tweet id or a status url (`x.com` or
 `twitter.com`, `www.` or not, query and fragment carried along or not);
 anything else is refused before anything runs, at no cost. The answer
-names the resolved id as `reply_to` beside the tweet's, and a post left
-under `confirm` carries the reply target in its task, so the owner
-approves what will go out.
+names the resolved id(s) beside the tweet's, and an action left under
+`confirm` carries them in its task, so the owner approves what will go
+out.
+
+`retweet` stamps another tweet with the connected account — X's repost.
+It is feed output like a post: the daily cap counts it in the same cell,
+and `confirm: ["repost"]` makes the owner sign each one off. `unretweet`
+takes the account's own stamp off (X refuses the rest of it); it and
+`delete` are removals, so neither is counted as output. What `delete`
+refuses is one out of X's timeline forever: the owner signs off every
+one unless their policy's `confirm` member is spelled — an absent
+`confirm` means delete asks; `confirm: []` means the owner trusted an
+agent with it; naming `delete` in the list means it asks like anything
+listed there. `tweet_id` everywhere accepts the id or the status url.
 
 ## The policy
 
@@ -48,14 +66,16 @@ refuses too — an unknown field is a parse error, not something to ignore.
 | field | absent means | set means |
 |---|---|---|
 | `max_per_day` | the owner is not capping you | that many posts a day, counted per calling wallet in UTC days; a post refused before it leaves gives its place back |
-| `confirm` | you post without asking | `["post"]`: every post waits for the owner's confirmation, answered `awaiting_owner` — a success, not to be retried |
+| `confirm` | you post without asking | names (`post`, `repost`, `delete`) the operations that wait for the owner's confirmation, answered `awaiting_owner` — a success, not to be retried. One silence the field does not own: a delete asks even when `confirm` is absent, and only a spelled member (even `[]`) says otherwise |
 
 ## The daily ceiling
 
 The connector itself carries one technical ceiling against a runaway loop —
-**500 posts in a UTC day per calling wallet**, declared in the manifest's
-`limits` and enforced by the coordinator, answered `operation_limit_reached`
-with `retry_after_seconds`. An attempt that ceiling refuses still counts
+**500 posts, reposts or unretweets — and 50 deletes — in a UTC day per
+calling wallet**, declared in the manifest's `limits` and enforced by the
+coordinator, answered `operation_limit_reached` with `retry_after_seconds`.
+(Deletions carry the lower ceiling to mirror X's own per-window limit on
+DELETE.) An attempt that ceiling refuses still counts
 toward it: wait, do not retry into it.
 
 ## Refusals

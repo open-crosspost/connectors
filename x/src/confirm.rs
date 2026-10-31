@@ -12,7 +12,7 @@
 //! `awaiting_owner` is a SUCCESS: the owner's confirmation is pending, and
 //! the caller does not retry. The outcome is read with `task_status`.
 
-use crate::{oauth, policy};
+use crate::{oauth, policy, x_api};
 use crate::runtime::{RecordStore, Secrets, Transport};
 use connector_core::Outcome;
 use outlayer::tasks::{self, Display, FieldKind, WrittenBy};
@@ -21,43 +21,73 @@ use serde_json::Value;
 /// The operation the platform starts, as the agent, on the owner's approval.
 pub const ANSWERED_BY: &str = "confirm";
 
-/// What a confirmed post holds, sealed as the task's state. No attachments,
-/// no recipients: a post is its text.
+/// What a confirmed action holds, sealed as the task's state. An untagged
+/// enum, deliberately: a state sealed by an earlier build is the post's
+/// text alone — its reply target and poll optional members — so it reads
+/// as a Post, and every new kind names itself. No `deny_unknown_fields`
+/// here ON PURPOSE: serde's untagged matching reads that attribute as
+/// "field names are variant names" and refuses every honest state — the
+/// kinds still cannot be told apart wrong, each carrying a member the
+/// other two lack (a text, a `repost_of`, a `delete_of`).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Prepared {
-    pub text: String,
-    /// When the post answers another post: its snowflake id, resolved by
-    /// `x_api::resolve_reply_to` before the post was prepared. `default`
-    /// reads states sealed by older builds, which held only a text.
-    #[serde(default)]
-    pub reply_to: Option<String>,
+#[serde(untagged)]
+pub enum Prepared {
+    Post {
+        text: String,
+        /// When the post answers another post: its snowflake id, resolved
+        /// before the post was prepared.
+        #[serde(default)]
+        reply_to: Option<String>,
+        /// When the post opens a poll: options and minutes, validated
+        /// before the post was prepared.
+        #[serde(default)]
+        poll: Option<x_api::Poll>,
+    },
+    /// The tweet being stamped, as its snowflake id.
+    Repost { repost_of: String },
+    /// The tweet being withdrawn, as its snowflake id. X refuses anything
+    /// the account did not author; the owner's signature says the rest.
+    Delete { delete_of: String },
 }
 
 /// The post as the owner reads it: what is shown is what is sent — the
-/// reply target beside the text, when the post is a reply.
-fn shown(text: &str, reply_to: Option<String>) -> Prepared {
-    Prepared { text: text.replace("\r\n", "\n"), reply_to }
+/// reply target and the poll beside the text, when the post carries them.
+pub fn shown(text: &str, reply_to: Option<String>, poll: Option<x_api::Poll>) -> Prepared {
+    Prepared::Post { text: text.replace("\r\n", "\n"), reply_to, poll }
 }
 
 fn display(prepared: &Prepared) -> Result<Display, String> {
-    let display = Display::new("Post to X").field("Text", FieldKind::LongText, &prepared.text, WrittenBy::Agent);
-    match &prepared.reply_to {
-        Some(id) => Ok(display.field(
-            "Reply to",
-            FieldKind::Text,
-            &format!("https://x.com/i/web/status/{id}"),
-            WrittenBy::Project,
-        )),
-        None => Ok(display),
+    match prepared {
+        Prepared::Post { text, reply_to, poll } => {
+            let mut display = Display::new("Post to X").field("Text", FieldKind::LongText, text, WrittenBy::Agent);
+            if let Some(id) = reply_to {
+                display = display.field("Reply to", FieldKind::Text, &status_url(id), WrittenBy::Project);
+            }
+            match poll {
+                Some(poll) => Ok(display
+                    .list("Poll options", &poll.options, WrittenBy::Agent)
+                    .field("Poll open for", FieldKind::Text, &format!("{} minutes", poll.duration_minutes), WrittenBy::Project)),
+                None => Ok(display),
+            }
+        }
+        Prepared::Repost { repost_of } => Ok(Display::new("Repost to X")
+            .field("Repost of", FieldKind::Text, &status_url(repost_of), WrittenBy::Agent)),
+        Prepared::Delete { delete_of } => Ok(Display::new("Delete from X")
+            .field("Delete", FieldKind::Text, &status_url(delete_of), WrittenBy::Agent)),
     }
 }
 
-/// Leave a post, which passed the owner's rules, as a task for the owner.
-pub fn ask(text: &str, reply_to: Option<String>) -> Result<Value, String> {
-    let prepared = shown(text, reply_to);
-    let state = serde_json::to_vec(&prepared).map_err(|e| format!("the post could not be kept: {e}"))?;
-    let task = tasks::confirm(display(&prepared)?, ANSWERED_BY, &state, &policy::stored());
+/// A tweet's url as anyone reaches it: the handleless form is exact for
+/// every tweet, whoever wrote it.
+pub fn status_url(id: &str) -> String {
+    format!("https://x.com/i/web/status/{id}")
+}
+
+/// Leave a post, a repost or a delete, which passed the owner's rules, as a
+/// task for the owner.
+pub fn ask(prepared: &Prepared) -> Result<Value, String> {
+    let state = serde_json::to_vec(prepared).map_err(|e| format!("the action could not be kept: {e}"))?;
+    let task = tasks::confirm(display(prepared)?, ANSWERED_BY, &state, &policy::stored());
     let opened = task.open().map_err(|e| e.refusal())?;
     Ok(tasks::awaiting_owner(&opened))
 }
@@ -81,13 +111,13 @@ fn before_answer(input: &super::Input, loaded: policy::Loaded<policy::Policy>) -
     Ok((call, policy::required(loaded, oauth::POLICY_ENV, oauth::CONNECT_PAGE)?))
 }
 
-/// The post a task held.
+/// The action a task held.
 fn held(state: &[u8]) -> Result<Prepared, String> {
-    serde_json::from_slice(state).map_err(|_| "task_unreadable: the task does not hold a post".to_string())
+    serde_json::from_slice(state).map_err(|_| "task_unreadable: the task does not hold a post, a repost or a delete".to_string())
 }
 
-/// The run the platform starts on the owner's approval: post the text the
-/// task holds.
+/// The run the platform starts on the owner's approval: carry out what the
+/// task holds — the post, the repost or the delete its preparer sealed.
 ///
 /// **Refused before the answer is taken** — a call that names no `task_id`,
 /// `task_hash` or `approval`; a policy that is absent or cannot be read;
@@ -143,17 +173,35 @@ fn after_answer(
         let _ = fail(&answer.id, &refusal);
         Err(refusal)
     };
-    let prepared = match held(&answer.state).and_then(|p| policy::check_text(&p.text).map(|_| p)) {
+    let prepared = match held(&answer.state) {
         Ok(prepared) => prepared,
         Err(why) => return refused(why),
     };
-    // Counted in this run's own cell, beside the agent's direct posts: the
-    // cap is the owner's bound on this agent, confirmed or not.
-    let mut posted = match super::deliver(rules, &prepared, transport, store, secrets, policy::Counted::Confirmed) {
-        Ok(posted) => posted,
-        Err(Outcome::Refused(why)) => return refused(why),
-        Err(unknown @ Outcome::Unknown(_)) => return Err(unknown.refusal()),
+    // A post's text passes the rules again — every other kind carries no
+    // text that X would weigh.
+    if let Prepared::Post { text, .. } = &prepared {
+        if let Err(why) = policy::check_text(text) {
+            return refused(why);
+        }
+    }
+    // The wire call the kind asks for, counted in this run's own cell,
+    // beside the agent's direct posts: the cap is the owner's bound on this
+    // agent, confirmed or not.
+    let action = match &prepared {
+        Prepared::Post { text, reply_to, poll } => super::Action::Post {
+            text: text.clone(),
+            reply_to: reply_to.clone(),
+            poll: poll.clone(),
+        },
+        Prepared::Repost { repost_of } => super::Action::Repost { repost_of: repost_of.clone() },
+        Prepared::Delete { delete_of } => super::Action::Delete { delete_of: delete_of.clone() },
     };
+    let mut posted =
+        match super::deliver(rules, &action, transport, store, secrets, policy::Counted::Confirmed) {
+            Ok(posted) => posted,
+            Err(Outcome::Refused(why)) => return refused(why),
+            Err(unknown @ Outcome::Unknown(_)) => return Err(unknown.refusal()),
+        };
     if let Some(note) = answer.note.as_deref().and_then(|n| std::str::from_utf8(n).ok()) {
         posted["note"] = serde_json::json!(note);
     }
@@ -174,12 +222,13 @@ fn closed(refusal: String) -> String {
     format!("{}. {CLOSED}", refusal.trim_end().trim_end_matches('.'))
 }
 
-/// The refusal when the post left and its result could not be left for the
-/// agent: the task ends as failed although the post went out, so the
-/// sentence says which of the two is true.
+/// The refusal when the action left and its result could not be left for
+/// the agent: the task ends as failed although the action went through, so
+/// the sentence says which of the two is true — and the agent carries its
+/// evidence (the tweet id) either way.
 fn sent_unreported(refusal: String, tweet_id: &str) -> String {
     format!(
-        "{}. The post WAS sent (tweet {tweet_id}) and the task is closed without its result: do not post it again",
+        "{}. The tweet was acted on (tweet {tweet_id}) and the task is closed without its result: do not carry it out again",
         refusal.trim_end().trim_end_matches('.')
     )
 }
@@ -208,7 +257,7 @@ mod tests {
             preparer: "agent.testnet".into(),
             kind: tasks::TaskKind::Confirm,
             operation: ANSWERED_BY.into(),
-            state: serde_json::to_vec(&shown(text, None)).unwrap(),
+            state: serde_json::to_vec(&shown(text, None, None)).unwrap(),
             files: Vec::new(),
             supplied: None,
             note: None,
@@ -254,7 +303,7 @@ mod tests {
             task_hash: Some("ab".repeat(32)),
             approval: Some(serde_json::json!({"at": 1, "public_key": "k", "signature": "s", "nonce": "n"})),
             note: None,
-            reply_to: None,
+            reply_to: None, poll: None, tweet_id: None,
         };
         let no_policy = before_answer(&call(), policy::Loaded::None).unwrap_err();
         assert!(no_policy.starts_with("policy_denied: "), "{no_policy}");
@@ -293,7 +342,7 @@ mod tests {
 
         // A post the rules refuse: an empty text, under any rules.
         let empty = tasks::Answer {
-            state: serde_json::to_vec(&shown("   ", None)).unwrap(),
+            state: serde_json::to_vec(&shown("   ", None, None)).unwrap(),
             ..answer_holding("gm")
         };
         let said = after_answer(&rules(), &empty, &transport, &store, &mut secrets, never_reports, fails).unwrap_err();
@@ -372,7 +421,7 @@ mod tests {
         let store = MemStore::default();
         let mut secrets = Secrets::default();
         let answer =
-            tasks::Answer { state: serde_json::to_vec(&shown("gm", Some("1901".into()))).unwrap(), ..answer_holding("gm") };
+            tasks::Answer { state: serde_json::to_vec(&shown("gm", Some("1901".into()), None)).unwrap(), ..answer_holding("gm") };
         let out =
             after_answer(&rules(), &answer, &transport, &store, &mut secrets, |_, _| Ok(()), never_fails).unwrap();
         assert_eq!(out["tweet_id"], "1902");
@@ -386,19 +435,109 @@ mod tests {
     #[test]
     fn a_state_of_an_older_build_reads_as_a_standalone_post() {
         let prepared = held(b"{\"text\":\"gm\"}").unwrap();
-        assert_eq!(prepared, Prepared { text: "gm".into(), reply_to: None });
+        assert_eq!(prepared, Prepared::Post { text: "gm".into(), reply_to: None, poll: None });
     }
 
-    /// What `ask` seals is read back exactly — the reply target rides
-    /// beside the text, so the owner approves what the run will post.
+    /// What `ask` seals is read back exactly — the reply target and the
+    /// poll ride beside the text, and every kind names itself: the owner
+    /// approves what the run will do.
     #[test]
-    fn what_the_task_seals_of_a_reply_reads_back_whole() {
+    fn what_the_task_seals_of_any_kind_reads_back_whole() {
         for prepared in [
-            shown("gm", Some("1901".into())),
-            shown("gm", None),
-            shown("gm\r\nhttp://not-a-url-but-just-text", Some("https://x.com/i/web/status/1901".into())),
+            shown("gm", Some("1901".into()), None),
+            shown("gm", None, None),
+            shown("gm\r\njust text", Some("1901".into()), None),
+            Prepared::Post {
+                text: "gm".into(),
+                reply_to: None,
+                poll: Some(x_api::Poll { options: vec!["gm".into(), "night".into()], duration_minutes: 60 }),
+            },
+            Prepared::Repost { repost_of: "1901".into() },
+            Prepared::Delete { delete_of: "1901".into() },
         ] {
             assert_eq!(held(&serde_json::to_vec(&prepared).unwrap()).unwrap(), prepared);
+        }
+    }
+
+    /// A repost the owner confirmed: the run stamps the tweet, the confirmed
+    /// count takes it like a post, and the report carries the wire's word.
+    #[test]
+    fn a_confirmed_repost_stamps_x_and_counts_like_a_post() {
+        let _row = env_row();
+        let transport = MockTransport::with(vec![
+            MockTransport::ok(200, serde_json::json!({"expires_in": 7200, "access_token": "AT", "scope": "tweet.write users.read"})),
+            MockTransport::ok(200, serde_json::json!({"data": {"id": "1", "username": "elliot", "name": "Elliot"}})),
+            MockTransport::ok(200, serde_json::json!({"data": {"retweeted": true}})),
+        ]);
+        let store = MemStore::default();
+        let mut secrets = Secrets::default();
+        let report = |_: &str, _: &[u8]| Ok(());
+        let prepared = Prepared::Repost { repost_of: "1901".into() };
+        let answer = tasks::Answer { state: serde_json::to_vec(&prepared).unwrap(), ..answer_holding("gm") };
+        let out = after_answer(&rules(), &answer, &transport, &store, &mut secrets, report, never_fails).unwrap();
+        assert_eq!(out["status"], "done");
+        assert_eq!(out["retweeted"], true);
+        assert_eq!(out["tweet_id"], "1901");
+        let (method, url, body) = &transport.seen.borrow()[2];
+        assert_eq!((method, url.as_str()), (&crate::runtime::Method::Post, "https://api.x.com/2/users/1/retweets"));
+        assert_eq!(serde_json::from_slice::<Value>(body).unwrap()["tweet_id"], serde_json::json!("1901"));
+        // The confirmed count, beside the agent's own.
+        let day = connector_core::day_key(connector_core::now_ms());
+        let key = policy::count_key(&day, policy::Counted::Confirmed);
+        assert_eq!(store.count(&key), 1);
+    }
+
+    /// A delete the owner confirmed: X's DELETE leaves, nothing is counted —
+    /// removal is not output — and the report says what is gone.
+    #[test]
+    fn a_confirmed_delete_refuses_x_and_carries_no_count() {
+        let _row = env_row();
+        let transport = MockTransport::with(vec![
+            MockTransport::ok(200, serde_json::json!({"expires_in": 7200, "access_token": "AT", "scope": "tweet.write users.read"})),
+            MockTransport::ok(200, serde_json::json!({"data": {"deleted": true}})),
+        ]);
+        let store = MemStore::default();
+        let mut secrets = Secrets::default();
+        let reported = RefCell::new(None);
+        let report = |id: &str, result: &[u8]| {
+            *reported.borrow_mut() = Some((id.to_string(), serde_json::from_slice::<Value>(result).unwrap()));
+            Ok(())
+        };
+        let prepared = Prepared::Delete { delete_of: "1901".into() };
+        let answer = tasks::Answer { state: serde_json::to_vec(&prepared).unwrap(), ..answer_holding("gm") };
+        let out = after_answer(&rules(), &answer, &transport, &store, &mut secrets, report, never_fails).unwrap();
+        assert_eq!(out["deleted"], true);
+        assert_eq!(out["tweet_id"], "1901");
+        assert_eq!(out["status"], "done");
+        for counted in [policy::Counted::Own, policy::Counted::Confirmed] {
+            let day = connector_core::day_key(connector_core::now_ms());
+            let key = policy::count_key(&day, counted);
+            assert_eq!(store.count(&key), 0, "a delete is not feed output");
+        }
+        let result = reported.borrow().clone().expect("a result was left");
+        assert_eq!(result.1["deleted"], serde_json::json!(true));
+    }
+
+    /// A confirmed delete whose outcome is lost: the task ends unreported —
+    /// the delete may have left — and it counts nothing either way.
+    #[test]
+    fn a_confirmed_delete_whose_outcome_is_lost_is_never_reported() {
+        let _row = env_row();
+        let transport = MockTransport::with(vec![
+            MockTransport::ok(200, serde_json::json!({"expires_in": 7200, "access_token": "AT", "scope": "tweet.write users.read"})),
+            MockTransport::network("connection reset"),
+        ]);
+        let store = MemStore::default();
+        let mut secrets = Secrets::default();
+        let prepared = Prepared::Delete { delete_of: "1901".into() };
+        let answer = tasks::Answer { state: serde_json::to_vec(&prepared).unwrap(), ..answer_holding("gm") };
+        let said = after_answer(&rules(), &answer, &transport, &store, &mut secrets, never_reports, never_fails).unwrap_err();
+        assert!(said.contains("outcome is unknown"), "{said}");
+        assert!(!said.contains(CLOSED), "{said}");
+        for counted in [policy::Counted::Own, policy::Counted::Confirmed] {
+            let day = connector_core::day_key(connector_core::now_ms());
+            let key = policy::count_key(&day, counted);
+            assert_eq!(store.count(&key), 0, "nothing was counted");
         }
     }
 
@@ -458,7 +597,7 @@ mod tests {
         let report = |_: &str, _: &[u8]| Err("task_store_unavailable: the task store did not answer".into());
         let said = after_answer(&rules(), &answer_holding("gm"), &transport, &store, &mut secrets, report, never_fails).unwrap_err();
         assert!(said.starts_with("task_store_unavailable: "), "{said}");
-        assert!(said.contains("WAS sent") && said.contains("1901") && said.contains("do not post it again"), "{said}");
+        assert!(said.contains("was acted on") && said.contains("1901") && said.contains("do not carry it out again"), "{said}");
         assert!(!said.contains(CLOSED), "{said}");
     }
 }
